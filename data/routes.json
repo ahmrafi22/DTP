@@ -1,0 +1,114 @@
+[
+  {
+    "id": "mirpur10-farmgate",
+    "name": "Mirpur 10 ↔ Farmgate",
+    "color": "#2563eb",
+    "type": "destination",
+    "from": { "name": "Mirpur 10", "lng": 90.368517, "lat": 23.806966 },
+    "to": { "name": "Farmgate", "lng": 90.390019, "lat": 23.757123 }
+  },
+  {
+    "id": "uttara-farmgate",
+    "name": "Uttara High School ↔ Farmgate",
+    "color": "#9333ea",
+    "type": "destination",
+    "from": { "name": "Uttara High School", "lng": 90.39719, "lat": 23.871403 },
+    "to": { "name": "Farmgate", "lng": 90.390019, "lat": 23.757123 }
+  },
+  {
+    "id": "banani-gulshan1",
+    "name": "Banani ↔ Gulshan 1",
+    "color": "#059669",
+    "type": "destination",
+    "from": { "name": "Banani", "lng": 90.404263, "lat": 23.793995 },
+    "to": { "name": "Gulshan 1", "lng": 90.416705, "lat": 23.778854 }
+  },
+  {
+    "id": "dhanmondi-gulshan2",
+    "name": "Dhanmondi Lake ↔ Gulshan 2",
+    "color": "#0891b2",
+    "type": "destination",
+    "from": { "name": "Dhanmondi Lake", "lng": 90.377754, "lat": 23.746217 },
+    "to": { "name": "Gulshan 2", "lng": 90.41435, "lat": 23.794397 }
+  },
+  {
+    "id": "asadgate-motijheel",
+    "name": "Asad Gate ↔ Motijheel",
+    "color": "#ea580c",
+    "type": "destination",
+    "from": { "name": "Asad Gate", "lng": 90.372721, "lat": 23.76018 },
+    "to": { "name": "Motijheel", "lng": 90.418523, "lat": 23.733929 }
+  },
+  {
+    "id": "malibagh-rampura",
+    "name": "Malibagh ↔ Rampura Bridge",
+    "color": "#e11d48",
+    "type": "destination",
+    "from": { "name": "Malibagh", "lng": 90.414683, "lat": 23.744888 },
+    "to": { "name": "Rampura Bridge", "lng": 90.423341, "lat": 23.76803 }
+  },
+  {
+    "id": "gabtoli-farmgate",
+    "name": "Gabtoli ↔ Farmgate",
+    "color": "#d97706",
+    "type": "destination",
+    "from": { "name": "Gabtoli", "lng": 90.349405, "lat": 23.78061 },
+    "to": { "name": "Farmgate", "lng": 90.390019, "lat": 23.757123 }
+  },
+  {
+    "id": "mohakhali-motijheel",
+    "name": "Mohakhali ↔ Motijheel",
+    "color": "#7c3aed",
+    "type": "destination",
+    "from": { "name": "Mohakhali", "lng": 90.4001, "lat": 23.776569 },
+    "to": { "name": "Motijheel", "lng": 90.418523, "lat": 23.733929 }
+  },
+  {
+    "id": "newmarket-motijheel",
+    "name": "New Market ↔ Motijheel",
+    "color": "#db2777",
+    "type": "destination",
+    "from": { "name": "New Market", "lng": 90.384416, "lat": 23.733117 },
+    "to": { "name": "Motijheel", "lng": 90.418523, "lat": 23.733929 }
+  },
+  {
+    "id": "gulistan-sadarghat",
+    "name": "Gulistan ↔ Sadarghat",
+    "color": "#0d9488",
+    "type": "destination",
+    "from": { "name": "Gulistan", "lng": 90.412067, "lat": 23.725613 },
+    "to": { "name": "Sadarghat", "lng": 90.40528, "lat": 23.712742 }
+  },
+  {
+    "id": "airport-banani",
+    "name": "Airport ↔ Banani",
+    "color": "#475569",
+    "type": "destination",
+    "from": { "name": "Airport", "lng": 90.381518, "lat": 23.853712 },
+    "to": { "name": "Banani", "lng": 90.404263, "lat": 23.793995 }
+  },
+  {
+    "id": "kakrail-mirpur12",
+    "name": "Kakrail ↔ Mirpur 12",
+    "color": "#6366f1",
+    "type": "destination",
+    "from": { "name": "Kakrail", "lng": 90.3998, "lat": 23.7398 },
+    "to": { "name": "Mirpur 12", "lng": 90.362815, "lat": 23.830343 }
+  },
+  {
+    "id": "moghbazar-mohakhali",
+    "name": "Moghbazar ↔ Mohakhali",
+    "color": "#65a30d",
+    "type": "destination",
+    "from": { "name": "Moghbazar", "lng": 90.402253, "lat": 23.749118 },
+    "to": { "name": "Mohakhali", "lng": 90.4001, "lat": 23.776569 }
+  },
+  {
+    "id": "gulistan-motijheel",
+    "name": "Gulistan ↔ Motijheel",
+    "color": "#f43f5e",
+    "type": "destination",
+    "from": { "name": "Gulistan", "lng": 90.412067, "lat": 23.725613 },
+    "to": { "name": "Motijheel", "lng": 90.418523, "lat": 23.733929 }
+  }
+]
