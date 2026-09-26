@@ -41,3 +41,5 @@ yarn-error.log*
 next-env.d.ts
 .screenshots/
 
+# backend lives in its own private repo (DTP-Backend)
+/backend
