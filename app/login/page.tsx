@@ -19,7 +19,9 @@ export default function LoginPage() {
 
   const signInPersona = (persona: Persona) => {
     // One-tap demo login: the seeded cast all share the demo password.
-    void login(persona.phone, "demo1234").then(() => router.push("/"));
+    void login(persona.phone, "demo1234")
+      .then(() => router.push("/"))
+      .catch(() => setFormError("Could not sign in — check the phone and password."));
   };
 
   const submit = (e: React.FormEvent) => {
