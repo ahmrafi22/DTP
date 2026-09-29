@@ -34,7 +34,7 @@ export function JoinRideSheet({
 
   // Reachable get-in stops: ahead of the auto's current position.
   const minGetIn = useMemo(
-    () => Math.ceil((ride?.progress ?? 0) * Math.max(stops.length - 1, 0)),
+    () => Math.floor((ride?.progress ?? 0) * Math.max(stops.length - 1, 0)),
     [ride?.progress, stops.length],
   );
 
@@ -175,8 +175,8 @@ export function JoinRideSheet({
         </div>
         {fare ? (
           <>
-            <div className="flex items-center justify-between pt-1">
-              <p className="text-muted-foreground text-[11px]">
+            <div className="pt-1">
+              <p className="text-muted-foreground text-[11px] leading-snug">
                 {fare.lines.reduce((s, l) => s + l.riders, 0) > fare.lines.length
                   ? "Shared legs already — your discount is in."
                   : "Solo right now — new riders drop it further."}
@@ -185,7 +185,7 @@ export function JoinRideSheet({
                 key={fare.total}
                 initial={{ scale: 1.06, opacity: 0.6 }}
                 animate={{ scale: 1, opacity: 1 }}
-                className="text-foreground text-lg font-black tracking-tight"
+                className="text-foreground pt-0.5 text-xl font-black tracking-tight"
               >
                 {formatTaka(fare.total)}
               </motion.p>

@@ -620,7 +620,7 @@ function TrackingCard({ request }: { request: RideRequest }) {
       )}
 
       <div className="border-border bg-secondary rounded-xl border p-3">
-        <div className="flex items-center justify-between">
+        <div>
           <p className="text-muted-foreground text-xs font-semibold">
             {request.status === "REQUESTED" ? "Estimated fare" : "Your fare"}
           </p>

@@ -99,8 +99,11 @@ export function LiveFleet({
   selectedDriverId: string | null;
   onSelect: (driverId: string) => void;
 }) {
-  const { map, isLoaded } = useMap();
+  const { map } = useMap();
   const spritesRef = useRef(new Map<string, SpriteRefs>());
+  // Which map instance the current sprites belong to — the Map component can
+  // swap instances (theme/style), and markers on a dead map render nowhere.
+  const spritesMapRef = useRef<MapLibreGL.Map | null>(null);
   const stateRef = useRef({ data, dataAt, selectedDriverId });
   stateRef.current = { data, dataAt, selectedDriverId };
   const onSelectRef = useRef(onSelect);
@@ -109,8 +112,13 @@ export function LiveFleet({
   // Create/remove sprites when the driver set changes; reposition + restyle
   // immediately so a paused rAF (background tab) still shows fresh state.
   useEffect(() => {
-    if (!map || !isLoaded || !data) return;
+    if (!map || !data) return;
     const sprites = spritesRef.current;
+    if (spritesMapRef.current !== map) {
+      for (const stale of sprites.values()) stale.marker.remove();
+      sprites.clear();
+      spritesMapRef.current = map;
+    }
     const alive = new Set(data.drivers.map((d) => d.driverId));
     for (const [id, sprite] of sprites) {
       if (!alive.has(id)) {
@@ -172,11 +180,11 @@ export function LiveFleet({
     return () => {
       // Keep sprites alive across data refreshes; teardown happens on unmount.
     };
-  }, [map, isLoaded, data, dataAt, selectedDriverId]);
+  }, [map, data, dataAt, selectedDriverId]);
 
   // Smooth motion: glide onboard sprites along their path every frame.
   useEffect(() => {
-    if (!map || !isLoaded) return;
+    if (!map) return;
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
@@ -191,7 +199,7 @@ export function LiveFleet({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [map, isLoaded]);
+  }, [map]);
 
   // Teardown when the map or the component goes away.
   useEffect(() => {
@@ -199,6 +207,7 @@ export function LiveFleet({
     return () => {
       for (const sprite of sprites.values()) sprite.marker.remove();
       sprites.clear();
+      spritesMapRef.current = null;
     };
   }, []);
 
