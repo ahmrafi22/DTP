@@ -6,6 +6,7 @@ import { useMap } from "@/components/ui/map";
 import { fetchMapLive, type MapLiveDriver, type MapLivePayload } from "@/lib/api";
 import { NODES } from "@/lib/network";
 import { pointAtFraction } from "@/lib/route";
+import { getTripGeometry, requestTripGeometry } from "@/components/map/trip-route";
 
 /**
  * The living fleet, straight from the database.
@@ -59,11 +60,9 @@ export function useMapLive(intervalMs = 4000): {
 function positionOf(driver: MapLiveDriver, dataAt: number): [number, number] | null {
   const ride = driver.ride;
   if (ride && ride.stopIds.length >= 2) {
-    const coords: [number, number][] = [];
-    for (const id of ride.stopIds) {
-      const stop = NODES[id];
-      if (stop) coords.push([stop.lng, stop.lat]);
-    }
+    // The same cached road geometry the trip overlay draws — the auto glides
+    // along the line it appears to be driving, not a straight chord.
+    const coords = getTripGeometry(ride.stopIds);
     if (coords.length >= 2) {
       const totalSec = Math.max(ride.totalSec, 1);
       const elapsedSec = ride.status === "STARTED" ? (Date.now() - dataAt) / 1000 : 0;
@@ -172,6 +171,7 @@ export function LiveFleet({
         sprites.set(driver.driverId, sprite);
       }
 
+      if (driver.ride) requestTripGeometry(driver.ride.stopIds);
       const pos = positionOf(driver, dataAt);
       if (pos) sprite.marker.setLngLat(pos);
       styleSprite(sprite, driver, driver.driverId === selectedDriverId);

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
   IoArrowForward,
+  IoFlagOutline,
   IoCarSportOutline,
   IoChevronBack,
   IoClose,
@@ -653,10 +654,102 @@ function TrackingCard({ request }: { request: RideRequest }) {
         </button>
       )}
 
+      {isCancellable(request.status) && (
+        <WaitAndSaveCard request={request} onDecide={(accept) => dispatch({ type: "SET_WAIT_AND_SAVE", requestId: request.id, accept })} />
+      )}
+
+      {request.status === "STARTED" && (
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "FINISH_RIDE", requestId: request.id })}
+          className="bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] flex w-full items-center justify-center gap-1.5 rounded-xl py-2.5 text-xs font-bold shadow-sm transition-all"
+        >
+          <IoFlagOutline className="size-4" />
+          I&apos;m out at {stopName(request.dropStopId)} — finish my ride
+        </button>
+      )}
+
       {request.status === "COMPLETED" && <RatingRow request={request} />}
     </div>
   );
 }
+
+/**
+ * Wait-and-Save (PRD §5 stretch, demo clock): after being matched, the rider
+ * can hold their seat for a short window to earn an extra 5% off — the driver
+ * gets time to fill the car, the rider gets a better deal. The countdown runs
+ * on the server's deadline, so a refresh or a second tab shows the same time.
+ */
+function WaitAndSaveCard({
+  request,
+  onDecide,
+}: {
+  request: RideRequest;
+  onDecide: (accept: boolean) => void;
+}) {
+  const [left, setLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!request.waitDeadline) return;
+    const tick = () => {
+      setLeft(Math.max(0, Math.ceil((new Date(request.waitDeadline!).getTime() - Date.now()) / 1000)));
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [request.waitDeadline]);
+
+  if (request.waitAndSave) {
+    return (
+      <div className="border-primary bg-secondary rounded-xl border p-3">
+        <div className="flex items-center justify-between">
+          <p className="text-foreground text-xs font-bold">Wait &amp; Save on</p>
+          {left !== null && left > 0 && (
+            <span className="bg-primary text-primary-foreground rounded-full px-2 py-0.5 text-[10px] font-black tabular-nums">
+              {left}s
+            </span>
+          )}
+        </div>
+        <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
+          {left !== null && left > 0
+            ? "Hold tight — the extra 5% is locked in if you still ride when the trip ends."
+            : "Promise made — the extra 5% applies when your trip finishes."}
+        </p>
+      </div>
+    );
+  }
+
+  if (request.waitDecided) return null;
+
+  return (
+    <div className="border-primary bg-secondary rounded-xl border p-3">
+      <p className="text-foreground text-xs font-bold">Wait &amp; Save — extra 5% off</p>
+      <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
+        Your pickup is at {stopName(request.pickupStopId)} and the driver is
+        on the way. Hold your seat a little longer and the car can fill up —
+        your fare drops an extra 5% if the trip finishes after the wait.
+      </p>
+      <div className="mt-2.5 flex gap-2">
+        <button
+          type="button"
+          onClick={() => onDecide(true)}
+          className="bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] flex-1 rounded-lg py-2 text-[11px] font-bold transition-all"
+        >
+          Wait &amp; save
+        </button>
+        <button
+          type="button"
+          onClick={() => onDecide(false)}
+          className="border-border text-muted-foreground hover:bg-muted active:scale-[0.98] rounded-lg border px-3 py-2 text-[11px] font-bold transition-all"
+        >
+          No thanks
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 
 export function FareLines({ request }: { request: RideRequest }) {
   const [open, setOpen] = useState(false);

@@ -29,6 +29,7 @@ import {
   admitRider as apiAdmitRider,
   advanceRide as apiAdvanceRide,
   cancelRide as apiCancelRide,
+  declineRequest as apiDeclineRequest,
   fetchAdminRides,
   fetchDriverHistory,
   fetchDriverState,
@@ -41,6 +42,8 @@ import {
   rateRide as apiRateRide,
   register as apiRegister,
   requestRide as apiRequestRide,
+  setWaitAndSave as apiSetWaitAndSave,
+  finishRide as apiFinishRide,
   setDriverOnline as apiSetDriverOnline,
   setToken,
   type ApiActivePassenger,
@@ -117,6 +120,9 @@ export type RideRequest = {
   createdAt: string;
   updatedAt: string;
   rating?: number;
+  waitAndSave: boolean;
+  waitDeadline: string | null;
+  waitDecided: boolean;
   cancelReason?: string;
   /** First name from the server (works for non-cast users too). */
   passengerName?: string;
@@ -152,8 +158,8 @@ export const PERSONAS: Persona[] = [
   { id: "nusrat", name: "Nusrat", role: "passenger", phone: "+880 171 0001001", homeStopId: "banani", usualDropStopId: "mohakhali" },
   { id: "rafiq", name: "Rafiq", role: "passenger", phone: "+880 171 0001002", homeStopId: "banani", usualDropStopId: "gulshan1" },
   { id: "shirin", name: "Shirin", role: "passenger", phone: "+880 171 0001003", homeStopId: "gulshan1", usualDropStopId: "banani" },
-  { id: "jashim", name: "Jashim", role: "driver", phone: "+880 181 0002001", homeStopId: "mirpur10", usualDropStopId: null },
-  { id: "kabir", name: "Kabir", role: "driver", phone: "+880 181 0002002", homeStopId: "uttara_hb", usualDropStopId: null },
+  { id: "jashim", name: "Jashim", role: "driver", phone: "+880 181 0002002", homeStopId: "mirpur10", usualDropStopId: null },
+  { id: "kabir", name: "Kabir", role: "driver", phone: "+880 181 0002003", homeStopId: "uttara_hb", usualDropStopId: null },
 ];
 
 export const VEHICLES: Vehicle[] = [
@@ -332,6 +338,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           fare: { baseFare: 0, distanceCharge: 0, poolDiscount: 0, total: 0, lines: [] },
           createdAt: "",
           updatedAt: "",
+          waitAndSave: false,
+          waitDeadline: null,
+          waitDecided: true,
         });
       }
       if (active.trip) {
@@ -419,8 +428,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let stopped = false;
     const isDriver = me.role === "driver";
 
+    // The first fetch always runs (a page opened in a background tab must not
+    // show stale state); later polls pause while the tab is hidden.
+    let firstPoll = true;
     const poll = async () => {
-      if (stopped || busyRef.current || document.hidden) return;
+      if (stopped || busyRef.current) return;
+      if (document.hidden && !firstPoll) return;
+      firstPoll = false;
       try {
         if (isDriver) await refreshDriver();
         else await refreshPassenger();
@@ -550,6 +564,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             await refreshDriver();
             break;
           }
+          case "DECLINE_REQUEST":
+            // Hides the pending request from this driver's list only.
+            await apiDeclineRequest(action.requestId);
+            await refreshDriver();
+            break;
+          case "SET_WAIT_AND_SAVE":
+            await apiSetWaitAndSave(action.requestId, action.accept);
+            await refreshPassenger();
+            break;
+          case "FINISH_RIDE":
+            // "I'm out at my stop" — completes this passenger's leg.
+            await apiFinishRide(action.requestId);
+            await refreshPassenger();
+            break;
           case "RATE_RIDE":
             await apiRateRide(action.requestId, action.rating);
             await refreshPassenger();
@@ -656,4 +684,7 @@ export type DtpAction =
       tripId: string;
       event: "DRIVER_ARRIVED" | "STARTED" | "COMPLETED";
     }
-  | { type: "RATE_RIDE"; requestId: string; rating: number }; // POST /rides/:id/rate
+  | { type: "RATE_RIDE"; requestId: string; rating: number }
+  | { type: "DECLINE_REQUEST"; requestId: string } // POST /rides/:id/decline
+  | { type: "SET_WAIT_AND_SAVE"; requestId: string; accept: boolean } // POST /rides/:id/wait-and-save
+  | { type: "FINISH_RIDE"; requestId: string } // POST /rides/:id/finish; // POST /rides/:id/rate

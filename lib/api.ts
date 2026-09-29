@@ -145,6 +145,10 @@ export type ApiRequest = {
   status: RideStatus;
   rating: number | null;
   cancelReason: string | null;
+  /** Wait-and-Save: the rider agreed to wait out the window for −5%. */
+  waitAndSave: boolean;
+  waitDeadline: string | null;
+  waitDecided: boolean;
   fare: Fare;
   createdAt: string;
   updatedAt: string;
@@ -393,6 +397,21 @@ export async function fetchJoinPreview(
   return api.get<JoinPreviewPayload>(
     `/rides/${rideId}/preview?pickupStopId=${encodeURIComponent(body.pickupStopId)}&dropStopId=${encodeURIComponent(body.dropStopId)}`,
   );
+}
+
+/** Driver declines a pending request: it leaves their list, others keep it. */
+export async function declineRequest(requestId: string) {
+  return api.post<{ requestId: string; declined: true }>(`/rides/${requestId}/decline`);
+}
+
+/** Wait-and-Save: hold the seat for the window to earn an extra 5% off. */
+export async function setWaitAndSave(requestId: string, accept: boolean) {
+  return api.post<{ request: ApiRequest }>(`/rides/${requestId}/wait-and-save`, { accept });
+}
+
+/** "I'm out at my stop" — the passenger completes their own leg. */
+export async function finishRide(requestId: string) {
+  return api.post<{ request: ApiRequest; ride: ApiRide }>(`/rides/${requestId}/finish`);
 }
 
 /** Driver admits a pre-booked (REQUESTED) rider into their own running trip. */

@@ -16,10 +16,39 @@ const coordOf = (stopId: string): [number, number] => [
   NODES[stopId].lat,
 ];
 
-// ponytail: in-memory cache only — the future backend will return real
-// geometries with the ride payload, making this fetch (and cache) moot.
+// in-memory cache only — the demo lives entirely in the browser session.
 // A `null` entry means "tried and unavailable" so we stop refetching.
 const geometryCache = new Map<string, [number, number][] | null>();
+
+const geometryKey = (stopIds: string[]): string => stopIds.join(">");
+
+/** Road geometry for a stop sequence if we already have it (or straight-line fallback). */
+export function getTripGeometry(stopIds: string[]): [number, number][] {
+  const cached = geometryCache.get(geometryKey(stopIds));
+  if (cached && cached.length >= 2) return cached;
+  return stopIds.map(coordOf);
+}
+
+/**
+ * Ask for the real road geometry once per stop sequence. Shared by the trip
+ * overlay and the fleet sprites so an auto glides along the very line it
+ * appears to be driving.
+ */
+export function requestTripGeometry(stopIds: string[]): void {
+  const key = geometryKey(stopIds);
+  if (geometryCache.has(key)) return;
+  if (stopIds.length < 2 || !stopIds.every((id) => NODES[id])) return;
+  const waypoints = stopIds.map((id) => `${NODES[id].lng},${NODES[id].lat}`).join(";");
+  fetch(`https://router.project-osrm.org/route/v1/driving/${waypoints}?overview=full&geometries=geojson`, {
+    signal: AbortSignal.timeout(8000),
+  })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`OSRM ${res.status}`))))
+    .then((json) => {
+      const coords = json?.routes?.[0]?.geometry?.coordinates;
+      geometryCache.set(key, Array.isArray(coords) && coords.length >= 2 ? coords : null);
+    })
+    .catch(() => geometryCache.set(key, null));
+}
 
 /**
  * The active ride (or driver trip) drawn over the demo fleet: one parrot
@@ -57,32 +86,20 @@ export function TripRoute({
 
   useEffect(() => {
     if (geometryCache.has(key)) return;
-    if (stopIds.length < 2 || !stopIds.every((id) => NODES[id])) return;
-
     let cancelled = false;
-    const waypoints = stopIds
-      .map((id) => `${NODES[id].lng},${NODES[id].lat}`)
-      .join(";");
-    const url = `https://router.project-osrm.org/route/v1/driving/${waypoints}?overview=full&geometries=geojson`;
-    fetch(url, { signal: AbortSignal.timeout(8000) })
-      .then((res) => {
-        if (!res.ok) throw new Error(`OSRM ${res.status}`);
-        return res.json();
-      })
-      .then((json) => {
-        const coords = json?.routes?.[0]?.geometry?.coordinates;
-        if (!Array.isArray(coords) || coords.length < 2)
-          throw new Error("no geometry");
-        geometryCache.set(key, coords);
-        if (!cancelled) setFetched({ key, coords });
-      })
-      .catch(() => {
-        // offline / rate-limited: keep showing the straight-line skeleton
-        geometryCache.set(key, null);
-        if (!cancelled) setFetched({ key, coords: null });
-      });
+    // Kick the shared fetch, then paint as soon as the cache fills.
+    requestTripGeometry(stopIds);
+    const timer = window.setInterval(() => {
+      if (cancelled) return;
+      const coords = geometryCache.get(key) ?? null;
+      if (coords !== null || geometryCache.has(key)) {
+        setFetched({ key, coords });
+        window.clearInterval(timer);
+      }
+    }, 400);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [key, stopIds]);
 

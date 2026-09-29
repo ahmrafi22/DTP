@@ -432,7 +432,29 @@ function PendingGroupCard({ group, disabled }: { group: RideRequest[]; disabled:
           {group.length} of {vehicle.capacity} seats
         </span>
       </div>
-      <TripRiders trip={{ requestIds: group.map((g) => g.id) }} />
+      {/* Riders with a pass/decline — a declined request leaves THIS driver's
+          list only; the first accept anywhere still claims it. */}
+      <ul className="space-y-1.5">
+        {group.map((r) => (
+          <li key={r.id} className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5">
+            <IoPeople className="text-muted-foreground size-3.5 shrink-0" />
+            <span className="text-foreground text-xs font-semibold">
+              {r.passengerName?.split(" ")[0] ?? "Rider"}
+            </span>
+            <span className="text-muted-foreground min-w-0 flex-1 truncate text-[11px]">
+              {stopName(r.pickupStopId)} → {stopName(r.dropStopId)} ·{" "}
+              {formatTaka(r.fare.total)}
+            </span>
+            <button
+              type="button"
+              onClick={() => dispatch({ type: "DECLINE_REQUEST", requestId: r.id })}
+              className="border-border text-muted-foreground hover:bg-muted shrink-0 rounded-md border px-2 py-1 text-[10px] font-bold transition-all"
+            >
+              Pass
+            </button>
+          </li>
+        ))}
+      </ul>
       <button
         type="button"
         disabled={disabled || !fits}
