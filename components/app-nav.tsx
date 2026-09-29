@@ -3,14 +3,18 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "motion/react";
-import { IoMap, IoPerson, IoTime } from "react-icons/io5";
+import { IoMap, IoPerson, IoShieldCheckmark, IoTime } from "react-icons/io5";
 import { useStore } from "@/components/store";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [
+type NavItem = { href: string; label: string; icon: typeof IoMap; role?: "admin" };
+
+const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Map", icon: IoMap },
   { href: "/activity", label: "Activity", icon: IoTime },
   { href: "/account", label: "Account", icon: IoPerson },
+  // Operations view — only meaningful for the admin role.
+  { href: "/admin", label: "Ops", icon: IoShieldCheckmark, role: "admin" as const },
 ];
 
 function isActivePath(pathname: string, href: string) {
@@ -68,7 +72,7 @@ export function AppNav() {
       className="fixed bottom-[calc(0.875rem+env(safe-area-inset-bottom))] left-1/2 z-40 -translate-x-1/2"
     >
       <div className="border-border bg-card shadow-zinc-950/10 flex items-center gap-0.5 rounded-full border p-1.5 shadow-lg md:gap-1 md:p-1">
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.filter((item) => !item.role || item.role === persona?.role).map((item) => {
           const active = isActivePath(pathname, item.href);
           return (
             <Link
