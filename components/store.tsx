@@ -26,6 +26,7 @@ import {
 } from "react";
 import {
   acceptRequests as apiAcceptRequests,
+  admitRider as apiAdmitRider,
   advanceRide as apiAdvanceRide,
   cancelRide as apiCancelRide,
   fetchAdminRides,
@@ -36,7 +37,6 @@ import {
   fetchMyHistory,
   fetchNetwork,
   getToken,
-  joinRide as apiJoinRide,
   login as apiLogin,
   rateRide as apiRateRide,
   register as apiRegister,
@@ -72,6 +72,8 @@ export type Persona = {
   role: Role;
   phone: string;
   homeStopId: string;
+  /** Habitual destination — the booking form prefills it. */
+  usualDropStopId: string | null;
 };
 
 export type Vehicle = {
@@ -147,11 +149,11 @@ export type DtpState = {
 // ---------- demo cast (seeded accounts on the backend) ----------
 
 export const PERSONAS: Persona[] = [
-  { id: "nusrat", name: "Nusrat", role: "passenger", phone: "+880 171 0001001", homeStopId: "banani" },
-  { id: "rafiq", name: "Rafiq", role: "passenger", phone: "+880 171 0001002", homeStopId: "banani" },
-  { id: "shirin", name: "Shirin", role: "passenger", phone: "+880 171 0001003", homeStopId: "gulshan1" },
-  { id: "jashim", name: "Jashim", role: "driver", phone: "+880 181 0002001", homeStopId: "banani" },
-  { id: "kabir", name: "Kabir", role: "driver", phone: "+880 181 0002002", homeStopId: "mohakhali" },
+  { id: "nusrat", name: "Nusrat", role: "passenger", phone: "+880 171 0001001", homeStopId: "banani", usualDropStopId: "mohakhali" },
+  { id: "rafiq", name: "Rafiq", role: "passenger", phone: "+880 171 0001002", homeStopId: "banani", usualDropStopId: "gulshan1" },
+  { id: "shirin", name: "Shirin", role: "passenger", phone: "+880 171 0001003", homeStopId: "gulshan1", usualDropStopId: "banani" },
+  { id: "jashim", name: "Jashim", role: "driver", phone: "+880 181 0002001", homeStopId: "mirpur10", usualDropStopId: null },
+  { id: "kabir", name: "Kabir", role: "driver", phone: "+880 181 0002002", homeStopId: "uttara_hb", usualDropStopId: null },
 ];
 
 export const VEHICLES: Vehicle[] = [
@@ -533,12 +535,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             await apiAcceptRequests(action.requestIds);
             await refreshDriver();
             break;
-          case "JOIN_RIDER": {
-            // Mid-trip joiner: needs a free seat and an overlapping route.
-            await apiJoinRide(action.rideId, action.requestId);
+          case "JOIN_RIDER":
+            // Driver admits a pre-booked rider into the running trip.
+            await apiAdmitRider(action.rideId, action.requestId);
             await refreshDriver();
             break;
-          }
           case "ADVANCE_TRIP": {
             const verb = {
               DRIVER_ARRIVED: "arrived",
@@ -573,6 +574,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           role: me.role,
           phone: me.phone,
           homeStopId: me.homeStopId ?? "banani",
+          usualDropStopId: me.usualDropStopId,
         }
       : null;
     const vehicle =

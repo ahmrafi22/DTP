@@ -5,160 +5,57 @@ import { AnimatePresence, motion } from "motion/react";
 import { IoClose, IoSearch } from "react-icons/io5";
 import { Map as MapView, MapControls, useMap } from "@/components/ui/map";
 import { FitAllRoutes } from "@/components/route-map";
-import { FleetAuto, StationaryAuto } from "@/components/map/fleet-engine";
+import { LiveFleet, useMapLive } from "@/components/map/live-fleet";
 import { FleetClockChip } from "@/components/map/fleet-clock";
 import { RidePanel } from "@/components/map/ride-panel";
 import { TripRoute } from "@/components/map/trip-route";
-import { AutoDetailCard } from "@/components/map/auto-detail";
+import { DriverDetailCard } from "@/components/map/driver-detail";
+import { JoinRideSheet } from "@/components/map/join-ride";
 import { AppNav, Brand } from "@/components/app-nav";
 import { NODES } from "@/lib/network";
-import {
-  FLEET,
-  STATIONARY_AUTOS,
-  activeFleet,
-  corridorRoute,
-  dhakaClockSec,
-  hashSeed,
-  mulberry32,
-  type BdClockAnchor,
-  type FleetLiveStatus,
-} from "@/lib/fleet";
+import { dhakaClockSec } from "@/lib/bd-clock";
 import { useActiveRequest, useActiveTrip, useStore } from "@/components/store";
-import type { RouteData } from "@/lib/route";
 
 const coordOf = (stopId: string): [number, number] => [
   NODES[stopId].lng,
   NODES[stopId].lat,
 ];
 
-export function MapWorkspace({ routes }: { routes: RouteData[] }) {
-  // Bangladesh clock: null until mounted so SSR markup never disagrees with
-  // the client about which fleet is on duty. The preview slider (demo time
-  // travel) overrides it. The anchor ref holds BD seconds + the wall-clock
-  // instant it was read, so engines interpolate smoothly between ticks and
-  // every lifecycle position is a pure function of BD time — reloading at
-  // the same second resumes the exact same progress.
+export function MapWorkspace() {
+  // Bangladesh clock for the chip — cosmetic, the fleet runs on the DB.
   const [liveMin, setLiveMin] = useState<number | null>(null);
-  const [previewMin, setPreviewMin] = useState<number | null>(null);
-  const previewSetAtRef = useRef(0);
   const lastMinuteRef = useRef(-1);
-  const clockRef = useRef<BdClockAnchor>({ bdSec: 0, unixMs: 0 });
 
   useEffect(() => {
     const tick = () => {
-      const now = Date.now();
-      const effSec =
-        previewMin != null
-          ? previewMin * 60 + (now - previewSetAtRef.current) / 1000
-          : dhakaClockSecSafe();
-      clockRef.current = { bdSec: effSec, unixMs: now };
-      const minute = Math.floor(effSec / 60) % 1440;
+      const minute = Math.floor(dhakaClockSec() / 60) % 1440;
       if (minute !== lastMinuteRef.current) {
         lastMinuteRef.current = minute;
         setLiveMin(minute);
       }
     };
     tick();
-    const timer = window.setInterval(tick, 250);
+    const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [previewMin]);
-
-  const nowMin = previewMin ?? liveMin;
-
-  // The BD-clock-scheduled fleet: at most MAX_CONCURRENT_AUTOS on duty, each
-  // on its own real corridor for the current shift window.
-  const active = useMemo(
-    () => (nowMin == null ? [] : activeFleet(nowMin)),
-    [nowMin],
-  );
-
-  // Always-parked autos at real stands (never move, cycle phases by clock).
-  const stationaryRoutes = useMemo<RouteData[]>(
-    () =>
-      STATIONARY_AUTOS.map((def) => ({
-        id: `stand-${def.id}`,
-        name: `${def.name} · ${def.at.name}`,
-        color: def.color,
-        kind: "stationary" as const,
-        fromName: def.at.name,
-        toName: def.at.name,
-        coordinates: [
-          [def.at.lng, def.at.lat] as [number, number],
-        ],
-        distance: null,
-        duration: null,
-        approximate: true,
-      })),
-    [],
-  );
-
-  // The corridors the on-duty autos are working — the map frames these.
-  const fitRoutes = useMemo(() => {
-    if (nowMin == null) return stationaryRoutes;
-    const seen = new Set<string>();
-    const out: RouteData[] = [...stationaryRoutes];
-    for (const { shift } of active) {
-      const route = corridorRoute(shift.corridor, routes);
-      if (route && !seen.has(route.id)) {
-        seen.add(route.id);
-        out.push(route);
-      }
-    }
-    return out;
-  }, [active, routes, nowMin, stationaryRoutes]);
-
-  // Route lines: a random 2–3 of the on-duty corridors are drawn at a time.
-  // The pick is seeded per 45s bucket, so it changes on a steady rhythm,
-  // survives reloads, and minute-ticks never flip lines mid-view.
-  const [lineIds, setLineIds] = useState<Set<string>>(() => new Set());
-  useEffect(() => {
-    const pick = () => {
-      const ids = active.map((entry) => entry.auto.id);
-      if (ids.length === 0) {
-        setLineIds(new Set());
-        return;
-      }
-      const bucket = Math.floor(Date.now() / 45000);
-      const rand = mulberry32(hashSeed(`lines:${bucket}`));
-      const shuffled = [...ids];
-      for (let i = shuffled.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(rand() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      const count = Math.min(ids.length, 2 + (bucket % 2));
-      setLineIds(new Set(shuffled.slice(0, count)));
-    };
-    // setState inside callbacks, not the effect body (avoid cascading renders).
-    const kickoff = window.setTimeout(pick, 0);
-    const timer = window.setInterval(pick, 45000);
-    return () => {
-      window.clearTimeout(kickoff);
-      window.clearInterval(timer);
-    };
-  }, [active]);
-
-  // Live status refs, one per auto (roster + stationary); the engines write
-  // into them and the detail panel polls (no React state per frame).
-  const statusRefs = useMemo(() => {
-    const refs = new Map<string, React.RefObject<FleetLiveStatus>>();
-    for (const auto of [...FLEET, ...STATIONARY_AUTOS]) {
-      refs.set(auto.id, {
-        current: {
-          phase: "parked",
-          progress: 0,
-          fromName: "",
-          toName: "",
-          standName: "",
-        },
-      });
-    }
-    return refs;
   }, []);
 
-  // Active ride / trip overlay data.
+  // The living fleet: one poll, all drivers, all running trips.
+  const { data: live, dataAt, refresh: refreshLive } = useMapLive(4000);
+
+  // Which driver's card is open, and whether the join sheet is up.
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const toggleDriver = (id: string) => {
+    setSelectedDriverId((prev) => (prev === id ? null : id));
+    setJoining(false);
+  };
+  const selectedDriver =
+    live?.drivers.find((d) => d.driverId === selectedDriverId) ?? null;
+
+  // Active ride / trip overlay data (the signed-in user's own trip).
   const activeRequest = useActiveRequest();
   const activeTrip = useActiveTrip();
-  const { state } = useStore();
+  const { state, refresh } = useStore();
 
   const overlay = useMemo(() => {
     if (activeRequest) {
@@ -195,60 +92,61 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
     return null;
   }, [activeRequest, activeTrip, state.requests]);
 
+  // Frame the world: every driver's base + every running trip's path.
+  // The refit only fires when this set changes, never on progress ticks.
+  const fitRoutes = useMemo(() => {
+    const out: {
+      id: string;
+      coordinates: [number, number][];
+    }[] = [];
+    const seenTrips = new Set<string>();
+    for (const d of live?.drivers ?? []) {
+      const base = d.baseStopId ? NODES[d.baseStopId] : null;
+      if (base) {
+        out.push({
+          id: `base-${d.driverId}`,
+          coordinates: [[base.lng, base.lat]],
+        });
+      }
+      if (d.ride && d.ride.stopIds.length >= 2 && !seenTrips.has(d.ride.id)) {
+        seenTrips.add(d.ride.id);
+        const coords = d.ride.stopIds
+          .map((id) => NODES[id])
+          .filter(Boolean)
+          .map((s) => [s.lng, s.lat] as [number, number]);
+        if (coords.length >= 2) {
+          out.push({ id: `trip-${d.ride.id}`, coordinates: coords });
+        }
+      }
+    }
+    return out;
+  }, [live]);
+
   // Mobile sheets.
   const [sheet, setSheet] = useState<"none" | "book" | "auto">("none");
 
-  // Which demo auto's detail panel is open (tap the sprite to toggle).
-  const [selectedAutoId, setSelectedAutoId] = useState<string | null>(null);
-  const toggleAuto = (id: string) => {
-    setSelectedAutoId((prev) => {
-      const next = prev === id ? null : id;
-      if (next) setSheet("auto");
-      else setSheet((s) => (s === "auto" ? "none" : s));
-      return next;
-    });
+  const openDriverPanel = (id: string) => {
+    setSelectedDriverId(id);
+    setJoining(false);
   };
-  const selectedEntry =
-    active.find((entry) => entry.auto.id === selectedAutoId) ?? null;
-  const stationaryDef =
-    STATIONARY_AUTOS.find((a) => a.id === selectedAutoId) ?? null;
-  const selectedRoute = selectedEntry
-    ? corridorRoute(selectedEntry.shift.corridor, routes)
-    : stationaryDef
-      ? stationaryRoutes.find((r) => r.id === `stand-${stationaryDef.id}`) ??
-        null
-      : null;
-  const selectedStatus = useFleetStatus(
-    selectedAutoId,
-    selectedRoute,
-    statusRefs,
-  );
-  const selectedFleet = (() => {
-    if (!selectedStatus) return undefined;
-    if (selectedEntry) {
-      return {
-        name: selectedEntry.auto.name,
-        driver: selectedEntry.auto.driver,
-        plate: selectedEntry.auto.plate,
-        status: selectedStatus,
-      };
-    }
-    if (stationaryDef) {
-      return {
-        name: stationaryDef.name,
-        driver: stationaryDef.driver,
-        plate: stationaryDef.plate,
-        status: selectedStatus,
-      };
-    }
-    return undefined;
-  })();
+
+  const closePanels = () => {
+    setSelectedDriverId(null);
+    setJoining(false);
+  };
+
+  const handleJoined = () => {
+    setJoining(false);
+    closePanels();
+    void refresh();
+    refreshLive();
+  };
 
   return (
     <main className="relative h-dvh w-full overflow-hidden">
       <MapView theme="light" center={[90.4, 23.78]} zoom={11.5}>
         <FitAllRoutes routes={fitRoutes} />
-        <DismissOnMapClick onDismiss={() => setSelectedAutoId(null)} />
+        <DismissOnMapClick onDismiss={closePanels} />
         <MapControls position="bottom-right" className="max-md:bottom-24" />
 
         {overlay && (
@@ -260,34 +158,12 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
           />
         )}
 
-        {active.map(({ auto, shift, shiftIndex }) => {
-          const route = corridorRoute(shift.corridor, routes);
-          if (!route) return null;
-          return (
-            <FleetAuto
-              key={`${auto.id}-${shiftIndex}`}
-              def={auto}
-              shift={shift}
-              shiftIndex={shiftIndex}
-              route={route}
-              selected={auto.id === selectedAutoId}
-              showLine={lineIds.has(auto.id)}
-              onSelect={toggleAuto}
-              clockRef={clockRef}
-              statusRef={statusRefs.get(auto.id)!}
-            />
-          );
-        })}
-
-        {STATIONARY_AUTOS.map((def) => (
-          <StationaryAuto
-            key={def.id}
-            def={def}
-            clockRef={clockRef}
-            onSelect={toggleAuto}
-            statusRef={statusRefs.get(def.id)!}
-          />
-        ))}
+        <LiveFleet
+          data={live}
+          dataAt={dataAt}
+          selectedDriverId={selectedDriverId}
+          onSelect={openDriverPanel}
+        />
       </MapView>
 
       {/* Brand chip (desktop; mobile keeps just the search pill) */}
@@ -298,39 +174,33 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
         </p>
       </div>
 
-      {/* BD clock + fleet schedule chip (bottom-left) */}
-      <FleetClockChip
-        nowMin={nowMin}
-        previewActive={previewMin != null}
-        routes={routes}
-        onPreview={(min) => {
-          previewSetAtRef.current = Date.now();
-          setPreviewMin(min);
-        }}
-        onLive={() => setPreviewMin(null)}
-      />
+      {/* BD clock + live fleet chip (bottom-left) */}
+      <FleetClockChip nowMin={liveMin} live={live} />
 
-      {/* Desktop: auto detail panel (slides in from the left) */}
+      {/* Desktop: driver card / join sheet (slides in from the left) */}
       <AnimatePresence>
-        {selectedRoute && (
+        {selectedDriver && (
           <motion.aside
-            key="auto-detail"
+            key="driver-detail"
             initial={{ x: -340, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: -340, opacity: 0 }}
             transition={{ type: "spring", bounce: 0.12, duration: 0.45 }}
             className="bg-card border-border absolute top-20 bottom-4 left-4 z-30 hidden w-[320px] overflow-y-auto rounded-2xl border p-4 shadow-lg md:block"
           >
-            <AutoDetailCard
-              route={selectedRoute}
-              progress={
-                selectedStatus?.phase === "carrying"
-                  ? selectedStatus.progress
-                  : 0
-              }
-              fleet={selectedFleet}
-              onClose={() => setSelectedAutoId(null)}
-            />
+            {joining ? (
+              <JoinRideSheet
+                driver={selectedDriver}
+                onClose={() => setJoining(false)}
+                onJoined={handleJoined}
+              />
+            ) : (
+              <DriverDetailCard
+                driver={selectedDriver}
+                onClose={closePanels}
+                onJoin={() => setJoining(true)}
+              />
+            )}
           </motion.aside>
         )}
       </AnimatePresence>
@@ -352,30 +222,39 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
         </button>
       </div>
 
-      {/* Mobile: auto detail sheet */}
+      {/* Mobile: driver card / join sheet */}
       <MobileSheet
-        open={sheet === "auto"}
-        onClose={() => setSheet("none")}
-        label={selectedRoute?.name ?? "Auto details"}
+        open={Boolean(selectedDriver) && sheet === "auto"}
+        onClose={() => {
+          closePanels();
+          setSheet("none");
+        }}
+        label={selectedDriver ? `${selectedDriver.vehicleName} · ${selectedDriver.driverName}` : "Auto details"}
       >
-        {selectedRoute && (
-          <AutoDetailCard
-            route={selectedRoute}
-            progress={
-              selectedStatus?.phase === "carrying" ? selectedStatus.progress : 0
-            }
-            fleet={selectedFleet}
-            onClose={() => setSheet("none")}
-          />
-        )}
+        {selectedDriver &&
+          (joining ? (
+            <JoinRideSheet
+              driver={selectedDriver}
+              onClose={() => setJoining(false)}
+              onJoined={() => {
+                handleJoined();
+                setSheet("none");
+              }}
+            />
+          ) : (
+            <DriverDetailCard
+              driver={selectedDriver}
+              onClose={() => {
+                closePanels();
+                setSheet("none");
+              }}
+              onJoin={() => setJoining(true)}
+            />
+          ))}
       </MobileSheet>
 
       {/* Mobile: booking bottom sheet */}
-      <MobileSheet
-        open={sheet === "book"}
-        onClose={() => setSheet("none")}
-        label="Plan a ride"
-      >
+      <MobileSheet open={sheet === "book"} onClose={() => setSheet("none")} label="Plan a ride">
         <RidePanel />
       </MobileSheet>
 
@@ -384,48 +263,14 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
   );
 }
 
-/** BD seconds-of-day; 0 before the Intl formatter is available client-side. */
-function dhakaClockSecSafe(): number {
-  try {
-    return dhakaClockSec();
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Poll the engine's imperative live status so the detail panel can show the
- * auto's current lifecycle phase and trip progress. The id rides along in the
- * sample so switching autos resets instantly instead of showing stale state.
- */
-function useFleetStatus(
-  id: string | null,
-  route: RouteData | null,
-  refs: Map<string, React.RefObject<FleetLiveStatus>>,
-) {
-  const [sample, setSample] = useState<{
-    id: string;
-    status: FleetLiveStatus;
-  } | null>(null);
-  useEffect(() => {
-    const ref = id ? refs.get(id) : undefined;
-    if (!id || !route || !ref) return;
-    const timer = window.setInterval(() => {
-      setSample({ id, status: { ...ref.current } });
-    }, 300);
-    return () => window.clearInterval(timer);
-  }, [id, route, refs]);
-  return sample && sample.id === id ? sample.status : null;
-}
-
-/** Tapping empty map closes an open auto popup. */
+/** Tapping empty map closes an open driver card / join sheet. */
 function DismissOnMapClick({ onDismiss }: { onDismiss: () => void }) {
   const { map, isLoaded } = useMap();
   useEffect(() => {
     if (!map || !isLoaded) return;
     const handler = (e: { originalEvent?: { target?: unknown } }) => {
       // MapLibre also fires a map click when a marker is tapped, which would
-      // close the popup the marker just opened. Ignore clicks on sprites.
+      // close the card the marker just opened. Ignore clicks on sprites.
       const target = e.originalEvent?.target as HTMLElement | null;
       if (target?.closest?.(".maplibregl-marker")) return;
       onDismiss();

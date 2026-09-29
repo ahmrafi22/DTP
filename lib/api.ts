@@ -109,6 +109,8 @@ export type ApiUser = {
   phone: string;
   role: Role;
   homeStopId: string | null;
+  /** Habitual destination — prefills the booking form ("same place every day"). */
+  usualDropStopId: string | null;
   isOnline: boolean;
   vehicle?: ApiVehicle | null;
 };
@@ -118,6 +120,8 @@ export type ApiVehicle = {
   driverId: string;
   name: string;
   capacity: number;
+  baseStopId: string | null;
+  color: string | null;
 };
 
 export type RideStatus =
@@ -230,11 +234,53 @@ export type ApiAdminRide = ApiRide & {
   requests: ApiRequest[];
 };
 
-// ---------- health ----------
+// ---------- live map + hop-on joining ----------
 
-export async function checkHealth() {
-  return api.get<{ ok: boolean; service: string; time: string; db?: string }>("/health");
-}
+/** One passenger aboard a live ride — first name + get-off stop, never a fare. */
+export type MapLivePassenger = {
+  firstName: string;
+  dropStopId: string;
+  status: RideStatus;
+};
+
+export type MapLiveRide = {
+  id: string;
+  status: RideStatus;
+  /** Ordered stop ids of the path the auto is driving. */
+  stopIds: string[];
+  /** 0–1 along the path while STARTED. */
+  progress: number;
+  totalSec: number;
+  passengers: MapLivePassenger[];
+};
+
+export type MapLiveDriver = {
+  driverId: string;
+  driverName: string;
+  vehicleId: string;
+  vehicleName: string;
+  color: string | null;
+  online: boolean;
+  phase: "offline" | "waiting" | "onboard";
+  baseStopId: string | null;
+  seatsTaken: number;
+  capacity: number;
+  ride: MapLiveRide | null;
+};
+
+export type MapLivePayload = {
+  drivers: MapLiveDriver[];
+  serverTime: string;
+};
+
+export type JoinPreviewPayload = {
+  ride: ApiRide;
+  stops: string[];
+  seatsFree: number;
+  fare: Fare;
+};
+
+// ---------- health ----------
 
 // ---------- auth ----------
 
@@ -334,9 +380,35 @@ export async function acceptRequests(requestIds: string[]) {
   return api.post<{ ride: ApiRide; requests: ApiRequest[] }>("/rides/accept", { requestIds });
 }
 
-/** Add a pending request to a running trip — the mid-trip joiner (PRD §5). */
-export async function joinRide(rideId: string, requestId: string) {
-  return api.post<{ ride: ApiRide; request: ApiRequest }>(`/rides/${rideId}/join`, { requestId });
+/** One snapshot of the whole living fleet — the map's single poll endpoint. */
+export async function fetchMapLive() {
+  return api.get<MapLivePayload>("/map/live");
+}
+
+/** What hopping on a running trip would cost right now, at current occupancy. */
+export async function fetchJoinPreview(
+  rideId: string,
+  body: { pickupStopId: string; dropStopId: string },
+) {
+  return api.get<JoinPreviewPayload>(
+    `/rides/${rideId}/preview?pickupStopId=${encodeURIComponent(body.pickupStopId)}&dropStopId=${encodeURIComponent(body.dropStopId)}`,
+  );
+}
+
+/** Driver admits a pre-booked (REQUESTED) rider into their own running trip. */
+export async function admitRider(rideId: string, requestId: string) {
+  return api.post<{ ride: ApiRide; request: ApiRequest }>(`/rides/${rideId}/admit`, { requestId });
+}
+
+/** Claim a free seat on a running trip with get-in/get-out stops. */
+export async function joinRideByStops(
+  rideId: string,
+  body: { pickupStopId: string; dropStopId: string; idempotencyKey?: string },
+) {
+  return api.post<{ ride: ApiRide; request: ApiRequest; replayed: boolean }>(
+    `/rides/${rideId}/join`,
+    body,
+  );
 }
 
 export type TripAction = "arrived" | "start" | "complete";

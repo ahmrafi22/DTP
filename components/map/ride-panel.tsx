@@ -210,7 +210,8 @@ function BookingFlow() {
 
   const startPlanning = () => {
     setPickup(persona.homeStopId);
-    setDrop(null);
+    // Habitual commute: the destination they ride to every day, pre-filled.
+    setDrop(persona.usualDropStopId);
     setPlanning(true);
   };
 

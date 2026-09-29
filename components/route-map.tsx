@@ -2,14 +2,17 @@
 
 import { useEffect, useRef } from "react";
 import { useMap } from "@/components/ui/map";
-import type { RouteData } from "@/lib/route";
 
 /**
- * Frames the scheduled fleet's corridors. Refits when the BD-clock duty set
- * changes (shift handover, preview scrubbing) so the action stays in view —
- * but never yanks the map back once the user has panned or zoomed themselves.
+ * Frames the world the fleet lives in: every driver's base plus every running
+ * trip's path. Refits only when the set of framed ids changes — never on
+ * progress ticks, and never once the user has panned or zoomed themselves.
  */
-export function FitAllRoutes({ routes }: { routes: RouteData[] }) {
+export function FitAllRoutes({
+  routes,
+}: {
+  routes: { id: string; coordinates: [number, number][] }[];
+}) {
   const { map, isLoaded } = useMap();
   const lastFitRef = useRef<string | null>(null);
   const userMovedRef = useRef(false);
