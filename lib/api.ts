@@ -97,6 +97,8 @@ export type Fare = {
   baseFare: number;
   distanceCharge: number;
   poolDiscount: number;
+  /** Extra discount from the Wait & Save promise; 0 when not used. */
+  waitSaveDiscount: number;
   total: number;
   lines: FareLine[];
 };
@@ -141,6 +143,12 @@ export type ApiRequest = {
   status: RideStatus;
   rating: number | null;
   cancelReason: string | null;
+  /** True when the passenger promised to wait at pickup for a discount. */
+  waitAndSave: boolean;
+  /** How this rider is paying; WALLET settles to the driver on completion. */
+  paymentMethod: "CASH" | "WALLET";
+  /** True once the fare has been moved to the driver's wallet. */
+  settled: boolean;
   fare: Fare;
   createdAt: string;
   updatedAt: string;
@@ -180,6 +188,12 @@ export type ApiCoRider = {
 export type ApiActivePassenger = {
   request: ApiRequest;
   trip?: ApiRide | null;
+  /**
+   * The whole trip's ordered stops. Everyone on one Tesla shares one line on
+   * the map, so a rider who joined later still draws the full route rather
+   * than only the slice they ride.
+   */
+  routeStopIds?: string[];
   vehicle?: { id: string; name: string; capacity: number; driverName: string } | null;
   coRiders?: ApiCoRider[];
 } | null;
@@ -214,7 +228,6 @@ export type ApiRoute = { id: string; name: string; corridor: string; stopIds: st
 
 export type ApiNetwork = { stops: ApiStop[]; legs: ApiLeg[]; routes: ApiRoute[] };
 
-/** One priced corridor option returned by POST /fare/estimate. */
 export type ApiFareOption = {
   routeId: string | null;
   title: string;
@@ -223,6 +236,10 @@ export type ApiFareOption = {
   stopIds: string[];
   fare: Fare;
 };
+
+/** Wait & Save: how long the driver may hold you, and what it pays (PRD §5). */
+export const WAIT_SAVE_MINUTES = 5;
+export const WAIT_SAVE_DISCOUNT_PCT = 5;
 
 export type ApiAdminRide = ApiRide & {
   vehicleName: string;
@@ -285,6 +302,10 @@ export async function requestRide(body: {
   dropStopId: string;
   routeId?: string | null;
   seats?: number;
+  /** Promise to wait up to 5 minutes at pickup for an extra 5% off. */
+  waitAndSave?: boolean;
+  /** WALLET moves the fare from the rider's TeslaPay balance to the driver. */
+  paymentMethod?: "CASH" | "WALLET";
   idempotencyKey?: string | null;
 }) {
   return api.post<{ request: ApiRequest; replayed: boolean }>("/rides/request", body);
@@ -354,4 +375,130 @@ export async function fetchRideEvents(rideId: string) {
 
 export async function fetchAdminRides() {
   return api.get<{ rides: ApiAdminRide[] }>("/admin/rides");
+}
+
+// ---------- operations ----------
+
+/** Tables emptied by a reset, and the ones deliberately kept. */
+export type ApiResetResult = {
+  ok: boolean;
+  cleared: string[];
+  skipped: string[];
+  preserved: string[];
+};
+
+/**
+ * Clear every rider and driver journey — rides, requests, fares, events and
+ * the wallet ledger — keeping the map and the accounts. Requires the `admin`
+ * role; there is no unauthenticated variant.
+ */
+export async function resetJourneys() {
+  return api.post<ApiResetResult>("/admin/reset");
+}
+
+// ---------- wallet (TeslaPay) ----------
+
+/** One tap on "add money" credits exactly this much. */
+export const TOPUP_TAKA = 100;
+
+export type ApiWallet = { balancePaisa: number; currency: string };
+
+export type ApiWalletTransaction = {
+  id: string;
+  kind: "TOPUP" | "RIDE_CHARGE" | "RIDE_EARNING";
+  amountPaisa: number;
+  balanceAfterPaisa: number;
+  counterpartyId: string | null;
+  requestId: string | null;
+  at: string;
+};
+
+/** The signed-in user's own wallet balance. Created server-side on first read. */
+export async function fetchWallet() {
+  return api.get<ApiWallet>("/wallet");
+}
+
+/**
+ * Credit the wallet. The amount is optional — the UI button means ৳100 every
+ * time — but the server is the one that decides the default.
+ */
+export async function topUpWallet(amountPaisa?: number) {
+  return api.post<ApiWallet & { transaction: ApiWalletTransaction }>("/wallet/top-up", {
+    amountPaisa,
+  });
+}
+
+/** The statement, newest first. */
+export async function fetchWalletTransactions() {
+  return api.get<{ transactions: ApiWalletTransaction[] }>("/wallet/transactions");
+}
+
+// ---------- hop-on: board a ride already running ----------
+
+export type ApiOpenRide = {
+  rideId: string;
+  status: RideStatus;
+  seatsFree: number;
+  capacity: number;
+  vehicleName: string;
+  driverName: string;
+  /** Every stop the whole trip runs through, in travel order. */
+  routeStopIds: string[];
+  /** Stops still ahead of the vehicle — valid boarding points. */
+  aheadStopIds: string[];
+  departedCount: number;
+  occupancy: { stopId: string; riders: number }[];
+  /** On board: first name and destination only, never a fare or phone. */
+  riders: { firstName: string; dropStopId: string }[];
+  /** When the trip entered STARTED, so the map can animate its position. */
+  startedAt: string | null;
+};
+
+/**
+ * Rides with a seat free that this passenger could still board.
+ *
+ * This is what makes pooling work in both directions: once someone is riding,
+ * everyone else can see that Tesla and get on at a stop it has not reached.
+ */
+export async function fetchOpenRides() {
+  return api.get<{ rides: ApiOpenRide[] }>("/rides/open");
+}
+
+/** Board a running ride at a stop it has not passed yet. */
+export async function hopOnRide(
+  rideId: string,
+  body: {
+    pickupStopId: string;
+    dropStopId: string;
+    seats?: number;
+    waitAndSave?: boolean;
+    paymentMethod?: "CASH" | "WALLET";
+  },
+) {
+  return api.post<{ ride: ApiRide; request: ApiRequest }>(`/rides/${rideId}/hop-on`, body);
+}
+
+/**
+ * Drop one rider off at their destination.
+ *
+ * Returns whether that was the last rider, in which case the backend
+ * completes the ride as well.
+ */
+export async function dropOffRider(
+  rideId: string,
+  requestId: string,
+): Promise<{ ride: ApiRide; request: ApiRequest; rideCompleted: boolean }> {
+  return api.post(`/rides/${rideId}/drop-off`, { requestId });
+}
+
+/**
+ * Advance ONE rider a single step (arrived → started → dropped off), without
+ * touching the other riders on the trip. The driver picks people up at
+ * different points, so each rider's track moves on its own.
+ */
+export async function advanceRider(rideId: string, requestId: string) {
+  return api.post<{ request: ApiRequest; ride: ApiRide }>(
+    `/rides/${rideId}/rider/advance`,
+    { requestId },
+  );
 }
