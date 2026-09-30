@@ -9,6 +9,8 @@ import { FleetAuto, StationaryAuto } from "@/components/map/fleet-engine";
 import { FleetClockChip } from "@/components/map/fleet-clock";
 import { RidePanel } from "@/components/map/ride-panel";
 import { TripRoute } from "@/components/map/trip-route";
+import { OpenRideDetail, OpenRideMarkers } from "@/components/map/open-rides";
+import { useTripProgress } from "@/lib/trip-progress";
 import { AutoDetailCard } from "@/components/map/auto-detail";
 import { AppNav, Brand } from "@/components/app-nav";
 import { NODES } from "@/lib/network";
@@ -39,18 +41,13 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
   // every lifecycle position is a pure function of BD time — reloading at
   // the same second resumes the exact same progress.
   const [liveMin, setLiveMin] = useState<number | null>(null);
-  const [previewMin, setPreviewMin] = useState<number | null>(null);
-  const previewSetAtRef = useRef(0);
   const lastMinuteRef = useRef(-1);
   const clockRef = useRef<BdClockAnchor>({ bdSec: 0, unixMs: 0 });
 
   useEffect(() => {
     const tick = () => {
       const now = Date.now();
-      const effSec =
-        previewMin != null
-          ? previewMin * 60 + (now - previewSetAtRef.current) / 1000
-          : dhakaClockSecSafe();
+      const effSec = dhakaClockSecSafe();
       clockRef.current = { bdSec: effSec, unixMs: now };
       const minute = Math.floor(effSec / 60) % 1440;
       if (minute !== lastMinuteRef.current) {
@@ -61,9 +58,9 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
     tick();
     const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [previewMin]);
+  }, []);
 
-  const nowMin = previewMin ?? liveMin;
+  const nowMin = liveMin;
 
   // The BD-clock-scheduled fleet: at most MAX_CONCURRENT_AUTOS on duty, each
   // on its own real corridor for the current shift window.
@@ -158,14 +155,33 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
   // Active ride / trip overlay data.
   const activeRequest = useActiveRequest();
   const activeTrip = useActiveTrip();
-  const { state } = useStore();
+  const { state, activeRide } = useStore();
+
+  // The vehicle only moves while the ride is STARTED. `updatedAt` is the
+  // server's timestamp for the transition into that state, which is where the
+  // 90-second run is measured from.
+  const liveRequest =
+    activeRequest ??
+    state.requests.find(
+      (r) => activeTrip !== null && activeTrip.requestIds.includes(r.id),
+    ) ??
+    null;
+  const tripProgress = useTripProgress(
+    (activeRequest?.status ?? liveRequest?.status) === "STARTED",
+    liveRequest?.updatedAt,
+  );
 
   const overlay = useMemo(() => {
     if (activeRequest) {
       return {
         id: `ride-${activeRequest.id}`,
-        stopIds: activeRequest.stopIds,
+        // The trip's whole route, not this rider's slice of it: one Tesla,
+        // one line on the map, whoever happens to be looking.
+        stopIds: activeRide?.routeStopIds?.length
+          ? activeRide.routeStopIds
+          : activeRequest.stopIds,
         dashed: activeRequest.status === "REQUESTED",
+        progress: tripProgress,
         riders: [
           {
             id: activeRequest.id,
@@ -183,8 +199,11 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
       if (!primary) return null;
       return {
         id: `trip-${activeTrip.id}`,
-        stopIds: primary.stopIds,
+        stopIds: activeRide?.routeStopIds?.length
+          ? activeRide.routeStopIds
+          : primary.stopIds,
         dashed: false,
+        progress: tripProgress,
         riders: riders.map((r) => ({
           id: r.id,
           pickup: coordOf(r.pickupStopId),
@@ -193,7 +212,7 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
       };
     }
     return null;
-  }, [activeRequest, activeTrip, state.requests]);
+  }, [activeRequest, activeTrip, state.requests, tripProgress]);
 
   // Mobile sheets.
   const [sheet, setSheet] = useState<"none" | "book" | "auto">("none");
@@ -251,12 +270,16 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
         <DismissOnMapClick onDismiss={() => setSelectedAutoId(null)} />
         <MapControls position="bottom-right" className="max-md:bottom-24" />
 
+        {/* Other passengers' rides, clickable straight from the map. */}
+        <OpenRideMarkers />
+
         {overlay && (
           <TripRoute
             id={overlay.id}
             stopIds={overlay.stopIds}
             dashed={overlay.dashed}
             riders={overlay.riders}
+            progress={overlay.progress}
           />
         )}
 
@@ -298,17 +321,8 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
         </p>
       </div>
 
-      {/* BD clock + fleet schedule chip (bottom-left) */}
-      <FleetClockChip
-        nowMin={nowMin}
-        previewActive={previewMin != null}
-        routes={routes}
-        onPreview={(min) => {
-          previewSetAtRef.current = Date.now();
-          setPreviewMin(min);
-        }}
-        onLive={() => setPreviewMin(null)}
-      />
+      {/* BD clock (bottom-left) */}
+      <FleetClockChip nowMin={nowMin} />
 
       {/* Desktop: auto detail panel (slides in from the left) */}
       <AnimatePresence>
@@ -334,6 +348,8 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
           </motion.aside>
         )}
       </AnimatePresence>
+
+      <OpenRideDetail />
 
       {/* Desktop: right booking sidebar */}
       <aside className="bg-card border-border absolute top-4 right-4 bottom-4 z-20 hidden w-[380px] flex-col overflow-y-auto rounded-2xl border p-4 shadow-lg md:flex">

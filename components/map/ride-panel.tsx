@@ -28,8 +28,15 @@ import {
   useStore,
   type RideRequest,
 } from "@/components/store";
-import { estimateFare, requestRide, type ApiCoRider } from "@/lib/api";
+import {
+  WAIT_SAVE_DISCOUNT_PCT,
+  WAIT_SAVE_MINUTES,
+  estimateFare,
+  requestRide,
+  type ApiCoRider,
+} from "@/lib/api";
 import { DotsPulse, PulseRing } from "@/components/loaders";
+import { HopOnCard } from "@/components/hop-on-card";
 import { cn } from "@/lib/utils";
 
 const stopName = (id: string) => NODES[id]?.name ?? id;
@@ -50,20 +57,27 @@ type RideOption = {
 // ---------- top-level role switch ----------
 
 export function RidePanel() {
-  const { persona, activeRide, error } = useStore();
+  const { persona, activeRide, error, dismissed } = useStore();
   const activeRequest = useActiveRequest();
   // Keep tracking a just-finished ride for a few minutes so the rating and
   // per-leg breakdown stay visible (the server keeps it in /me/active).
-  const tracked =
+  // The ride to track: the active one, or a just-finished one so the rating
+  // and per-leg breakdown stay reachable for a few minutes.
+  const current =
     activeRequest ??
-    (activeRide && (activeRide.request.status === "COMPLETED" || activeRide.request.status === "CANCELLED")
+    (activeRide?.request.status === "COMPLETED"
       ? adaptRequest(activeRide.request)
       : null);
+  // "Close and book another" drops the card so the booking form comes back.
+  const tracked = current && dismissed.includes(current.id) ? null : current;
 
   if (!persona) return <GuestCard />;
   if (persona.role === "driver") return <DriverQuickCard />;
   return (
     <>
+      {/* Other people's rides, boardable at a stop ahead. Hidden while this
+          passenger already has one, so the panel never nags mid-ride. */}
+      {!tracked && <HopOnCard />}
       <AnimatePresence mode="wait" initial={false}>
         {tracked ? (
           <motion.div key="tracking" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} transition={spring}>
@@ -167,6 +181,8 @@ function BookingFlow() {
   const [planning, setPlanning] = useState(false);
   const [pickup, setPickup] = useState<string | null>(null);
   const [drop, setDrop] = useState<string | null>(null);
+  const [waitAndSave, setWaitAndSave] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<"CASH" | "WALLET">("CASH");
 
   // The fare the passenger sees before confirming comes from the server
   // (POST /fare/estimate), so it cannot drift from what is actually charged.
@@ -258,6 +274,10 @@ function BookingFlow() {
                 <RouteOptions
                   options={options}
                   error={error}
+                  waitAndSave={waitAndSave}
+                  onToggleWaitAndSave={setWaitAndSave}
+                  paymentMethod={paymentMethod}
+                  onChangePayment={setPaymentMethod}
                   onConfirm={async (opt, meta) => {
                     try {
                       await requestRide({
@@ -265,6 +285,8 @@ function BookingFlow() {
                         dropStopId: drop,
                         routeId: opt.routeId,
                         seats: meta.seats,
+                        waitAndSave,
+                        paymentMethod,
                         idempotencyKey: meta.idempotencyKey,
                       });
                       return true;
@@ -314,12 +336,28 @@ function StopField({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
-  const matches = useMemo(() => {
+  // Every stop is reachable from the picker: the whole graph, grouped by zone
+  // and alphabetised within each zone so 60 entries stay scannable. Searching
+  // narrows on name or zone and never truncates silently.
+  const zones = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = Object.values(NODES);
-    if (!q) return list.slice(0, 8);
-    return list.filter((n) => n.name.toLowerCase().includes(q)).slice(0, 8);
+    const matches = Object.values(NODES).filter(
+      (n) =>
+        !q ||
+        n.name.toLowerCase().includes(q) ||
+        n.zone.toLowerCase().includes(q) ||
+        n.id.toLowerCase().includes(q),
+    );
+    const grouped = new Map<string, typeof matches>();
+    for (const stop of [...matches].sort((a, b) => a.name.localeCompare(b.name))) {
+      const bucket = grouped.get(stop.zone);
+      if (bucket) bucket.push(stop);
+      else grouped.set(stop.zone, [stop]);
+    }
+    return [...grouped.entries()];
   }, [query]);
+
+  const matchCount = zones.reduce((sum, [, stops]) => sum + stops.length, 0);
 
   return (
     <div className="relative">
@@ -356,27 +394,47 @@ function StopField({
         )}
       </div>
       {open && (
-        <ul className="border-border bg-card absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-xl border py-1 shadow-lg">
-          {matches.map((n) => (
-            <li key={n.id}>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  onPick(n.id);
-                  setOpen(false);
-                }}
-                className="hover:bg-secondary active:bg-secondary flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium transition-colors"
-              >
-                <span className={cn("size-2 rounded-full", label === "Pickup" ? "bg-primary" : "bg-ink")} />
-                {n.name}
-              </button>
-            </li>
+        <div className="border-border bg-card absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto overscroll-contain rounded-xl border py-1 shadow-lg">
+          {zones.map(([zone, stops]) => (
+            <div key={zone}>
+              <p className="text-muted-foreground bg-muted/60 sticky top-0 px-3 py-1 text-[10px] font-bold tracking-wide uppercase backdrop-blur">
+                {zone.replace("-", " ")}
+              </p>
+              <ul>
+                {stops.map((n) => (
+                  <li key={n.id}>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        onPick(n.id);
+                        setOpen(false);
+                      }}
+                      className="hover:bg-secondary active:bg-secondary flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium transition-colors"
+                    >
+                      <span
+                        className={cn(
+                          "size-2 shrink-0 rounded-full",
+                          label === "Pickup" ? "bg-primary" : "bg-ink",
+                        )}
+                      />
+                      {n.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ))}
-          {matches.length === 0 && (
-            <li className="text-muted-foreground px-3 py-2 text-xs">No stops match “{query}”.</li>
+          {matchCount === 0 && (
+            <p className="text-muted-foreground px-3 py-2 text-xs">No stops match “{query}”.</p>
           )}
-        </ul>
+          {matchCount > 0 && (
+            <p className="text-muted-foreground border-border sticky bottom-0 border-t bg-muted/60 px-3 py-1.5 text-[10px] font-semibold backdrop-blur">
+              {matchCount} of {Object.keys(NODES).length} stops
+              {query.trim() ? ` matching “${query.trim()}”` : ""}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -386,10 +444,18 @@ function RouteOptions({
   options,
   onConfirm,
   error,
+  waitAndSave,
+  onToggleWaitAndSave,
+  paymentMethod,
+  onChangePayment,
 }: {
   options: RideOption[];
   onConfirm: (option: RideOption, meta: { seats: number; idempotencyKey: string }) => Promise<boolean>;
   error: string | null;
+  waitAndSave: boolean;
+  onToggleWaitAndSave: (v: boolean) => void;
+  paymentMethod: "CASH" | "WALLET";
+  onChangePayment: (v: "CASH" | "WALLET") => void;
 }) {
   const [selected, setSelected] = useState(options[0]?.id);
   const [requesting, setRequesting] = useState(false);
@@ -482,6 +548,65 @@ function RouteOptions({
               </>
             )}
           </button>
+          {/* Wait and Save (PRD §5): promise to wait at pickup, pay less. */}
+          <button
+            type="button"
+            onClick={() => onToggleWaitAndSave(!waitAndSave)}
+            aria-pressed={waitAndSave}
+            className={cn(
+              "flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors",
+              waitAndSave
+                ? "border-primary bg-secondary/60"
+                : "border-border bg-card hover:bg-muted",
+            )}
+          >
+            <span className="min-w-0">
+              <span className="text-foreground block text-xs font-bold">
+                Wait &amp; save {WAIT_SAVE_DISCOUNT_PCT}%
+              </span>
+              <span className="text-muted-foreground block text-[11px]">
+                I&apos;ll wait up to {WAIT_SAVE_MINUTES} min at pickup for a discount
+              </span>
+            </span>
+            <span
+              className={cn(
+                "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+                waitAndSave ? "bg-primary" : "bg-muted",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 size-4 rounded-full bg-white transition-all",
+                  waitAndSave ? "left-[18px]" : "left-0.5",
+                )}
+              />
+            </span>
+          </button>
+          {/* How to pay. TeslaPay moves the fare to the driver when the trip ends. */}
+          <div className="border-border bg-card flex rounded-xl border p-1">
+            {(["CASH", "WALLET"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => onChangePayment(m)}
+                aria-pressed={paymentMethod === m}
+                className={cn(
+                  "flex-1 rounded-lg py-2 text-[11px] font-bold transition-all",
+                  paymentMethod === m
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {m === "CASH" ? "Cash" : "TeslaPay"}
+              </button>
+            ))}
+          </div>
+          <p className="text-muted-foreground text-center text-[10px]">
+            {paymentMethod === "WALLET"
+              ? "Your fare is taken from your TeslaPay balance when the trip ends."
+              : "Pay the driver directly at the end of the trip."}
+          </p>
+
           {error && (
             <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-center text-[11px] font-medium text-destructive">
               {error}
@@ -554,6 +679,9 @@ function TrackingCard({ request }: { request: RideRequest }) {
       ? personaById(vehicle.driverId ?? null)
       : null;
   const coRiders: ApiCoRider[] = activeRide?.coRiders ?? [];
+  const { pendingAction } = useStore();
+  const completing =
+    pendingAction === `complete:${request.tripId ?? ""}`;
 
   return (
     <div className="space-y-3 py-1">
@@ -601,6 +729,30 @@ function TrackingCard({ request }: { request: RideRequest }) {
         </motion.div>
       )}
 
+      {/* A passenger can close out a run that has clearly finished, so the
+          ride never gets stuck at STARTED when the driver walks away. */}
+      {request.status === "STARTED" && request.tripId && (
+        <button
+          type="button"
+          disabled={completing}
+          onClick={() => dispatch({ type: "COMPLETE_RIDE", rideId: request.tripId as string })}
+          className="border-border text-muted-foreground hover:bg-muted hover:text-foreground w-full rounded-xl border py-2 text-[11px] font-bold transition-all disabled:opacity-70"
+        >
+          {completing ? "Finishing…" : "I've been dropped off — finish trip"}
+        </button>
+      )}
+
+      {/* Once it is over, close the panel so a new ride can be booked. */}
+      {(request.status === "COMPLETED" || request.status === "CANCELLED") && (
+        <button
+          type="button"
+          onClick={() => dispatch({ type: "CLOSE_RIDE", requestId: request.id })}
+          className="bg-primary text-primary-foreground hover:bg-primary/90 w-full rounded-xl py-2.5 text-xs font-bold transition-all"
+        >
+          Close and book another ride
+        </button>
+      )}
+
       {coRiders.length > 0 && (
         <div className="border-border rounded-xl border p-3">
           <p className="text-muted-foreground pb-2 text-[10px] font-bold tracking-wide uppercase">
@@ -625,6 +777,11 @@ function TrackingCard({ request }: { request: RideRequest }) {
           </p>
           <p className="text-foreground text-lg font-black tracking-tight">{formatTaka(request.fare.total)}</p>
         </div>
+        {request.waitAndSave && request.fare.waitSaveDiscount > 0 && (
+          <p className="text-muted-foreground pt-1 text-center text-[10px]">
+            Wait &amp; save applied: −{formatTaka(request.fare.waitSaveDiscount)}
+          </p>
+        )}
         {request.fare.poolDiscount > 0 && (
           <p className="text-foreground mt-1 text-[11px] font-semibold">
             Pool discount applied: −{formatTaka(request.fare.poolDiscount)}
