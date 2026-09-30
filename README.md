@@ -102,7 +102,8 @@ lib/
 ## Known limitations
 
 - Polling, not push: a lifecycle change shows within ~2.5s, not instantly.
-- The map's demo autos are a client-side simulation and are not connected to
-  the ride database; real rides render from server data.
+- The map's autos are real driver accounts served by `GET /map/live`; a small
+  scheduler keeps ~3 of them running shuttle trips, so the demo world keeps
+  moving on its own between interactions.
 - The JWT is in `localStorage`, which is demo-acceptable but not XSS-proof —
   httpOnly cookies are the production choice.

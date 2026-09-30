@@ -43,3 +43,6 @@ next-env.d.ts
 
 # backend lives in its own private repo (DTP-Backend)
 /backend
+
+# local tooling scratch
+.zcodeignore
