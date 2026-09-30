@@ -1,108 +1,98 @@
-# Dhaka Tesla Pool — Web
+# Dhaka Tesla Pool 
 
-The passenger and driver front end for **Dhaka Tesla Pool**: passengers request
-a seat between two Dhaka areas, the backend pools compatible riders into one
-shared Tesla, and each rider tracks and pays only for their own fare.
+*Share a seat. Split the fare. Survive Dhaka traffic.*
 
-The API lives in its own repository (see the backend README). This app talks to
-it over HTTP and keeps no authoritative state of its own.
+8:41 AM, Banani Road 11 — Jashim leans against **Bullet**, his 3-seat battery "Tesla". Nusrat books Banani → Mohakhali; Rafiq books Banani → Gulshan 1 two minutes later. The app pools them if they share route legs, splits each fare fairly, and shows Jashim who rides and when to go. Then Shirin races for the last seat.
 
-## Stack
+![App preview](public/preview.png)
 
-| Layer | Choice | Why |
-|---|---|---|
-| Framework | Next.js 16 (App Router) | File-based routing; the map, booking and history screens are client components over a thin shell |
-| Language | TypeScript (strict) | The store mirrors API payloads, so a rename on the server should fail the build, not the demo |
-| Map | MapLibre GL (vendored `mapcn` wrapper) | Free, no API key, real Dhaka basemap tiles |
-| State | React Context store | Small enough that a state library would be more code than it saves |
-| Styling | Tailwind v4 + shadcn primitives | Utility styling with no runtime CSS-in-JS cost |
-| Data | Polling (2.5s) | The MVP needs lifecycle updates, not sockets; WebSockets/SSE is the first upgrade |
+- Backend (live): https://dtp-backend.vercel.app (`GET /health`)
+- ERD + Architecture: https://excalidraw.com/#json=w__I65H8ONqTkhAb3vKMB,MIGnRpCFluSI9dg6bwuWIQ (static copy: `backend/dtp-erd.excalidraw`)
+- Demo video: https://drive.google.com/file/d/14i2eLP8RnzAyFs5c5StKb3k8NM8S_UcU/view?usp=sharing_
+
+
+**Map:** [mapcn](https://mapcn.dev/) components (`@/components/ui/map`) over [MapLibre GL](https://maplibre.org/) with free Carto tiles — no API keys. mapcn is shadcn-style copy-paste components (markers, popups, routes, controls) on top of MapLibre, Tailwind-native and zero lock-in; this app can drop to the raw `map` instance whenever needed. A predefined Dhaka road graph (`predefiend_routes.js`, 38 corridors) powers the pickers, fare estimates, and the fleet corridors that are always drawn on the map — live rides overlay on top.
+    
+
+## Tech stack
+
+<img src="https://go-skill-icons.vercel.app/api/icons?i=typescript,nextjs,react,tailwindcss,shadcn,jwt,vitest,expressjs,postgresql,docker,vercel" />
+
+
+| Choice (non-mandated) | Alternatives | Why this MVP | Switch when |
+|---|---|---|---|
+| PostgreSQL | MongoDB, SQLite | `seats_taken <= capacity` needs transactions + CHECK constraints | Geo scale → PostGIS + read replicas |
+| Express + Zod | NestJS, Fastify | Smallest surface for pooling logic, validated transitions | Team >5 → NestJS |
+| MapLibre | Google/Mapbox (paid) | PRD §4: no map-API fights, free Dhaka tiles | Real ETA/traffic → Mapbox + self-host OSRM |
+| Polling, not sockets | WS/SSE, Redux | Lifecycle updates only; less code than it saves | Live tracking → SSE/WS + React Query |
+| JWT in localStorage | httpOnly cookies | Zero-infra demo | Prod now → httpOnly cookies + rotation |
+
+
+## Features
+
+- **Passenger (Nusrat, Rafiq, Shirin):** sign up/in, request ride (pickup → drop, seats, Wait & Save), server-priced estimate, live status, cancel while valid, own-fare-only view, history + rating + wallet.
+- **Driver (Jashim/Bullet, Kabir/Rocket):** sign in, online/offline, request inbox, accept / hop-on join, arrived → start → complete, passenger list + per-trip audit trail, history.
+- **Admin:** read-only `/admin` over `GET /admin/rides`. Every screen has loading/error/empty states.
+
+## Answers to PRD questions
+
+- **Matching rule (§4):** poolable iff trips share **≥ 1 leg** on the predefined Dhaka graph (`sharedLegs()`). Nusrat + Rafiq share the Banani corridor leg → pool; Mirpur → Uttara shares none → solo.
+- **Fare (§5)** — all money is **integer paisa** (100 paisa = ৳1), so no float rounding; per-leg receipt stored in `fare_legs`. Cash or simulated TeslaPay, no gateway.
+
+  $$\text{fare} = \text{base} + \text{distance} - \text{pool discount} - \text{wait-save}$$
+
+  - **base** = ৳30 flat per passenger, always.
+  - **distance** = sum of your legs, each leg ≈ ৳18/km × congestion (min ৳10/leg).
+  - **pool discount** = per leg: ride alone → 0%, share with 1 person → 20% off that leg, share with 2 → 30% off.
+  - **wait & save** (optional) = extra 5% off the distance part for waiting 5 min at pickup.
+  - Example: Nusrat and Rafiq share one ৳50 leg and each rides one solo ৳40 leg → shared leg costs each $50 - 20\% = 40$; each pays $30 + 40 + 40 = 110$ (৳110).
+- **Lifecycle (§3):** `REQUESTED → MATCHED → DRIVER_ARRIVED → STARTED → COMPLETED (+ CANCELLED)`; invalid transitions rejected server-side. Ride born at `MATCHED` on driver accept.
+- **Concurrency (§12):** 1 seat left, Nusrat + Shirin claim at once → Postgres transaction + `SELECT … FOR UPDATE`, re-check inside lock, exactly one wins (other gets 409). `seats_taken <= capacity` holds as a DB CHECK backstop. Scale-up: per-vehicle queue/Redis lock + existing `idempotency_key` + retry.
+- **Viral scale (bonus):** stateless API + LB, read replicas, Redis cache + geo index, per-vehicle matching queue, rate limit + idempotency, WS fan-out, observability, same Docker image rollout.
+- **Architecture (§9):** `Browser → Next.js → Express API → PostgreSQL`. Frontend holds no authority: `lib/api.ts` is the only backend seam, `components/store.tsx` is a polling mirror. Tables: `stops, legs, routes, route_stops, users, vehicles, rides, ride_requests, fare_legs, ride_events, wallets, wallet_transactions`.
 
 ## Run
 
 ```bash
 npm install
 npm run dev                        # http://localhost:3000
+# use hosted backend:
+# NEXT_PUBLIC_API_URL=https://dtp-backend.vercel.app npm run dev
+npm run build / npm start / npm run lint
 ```
 
-The backend must be running for anything but the map. `npm run build` produces
-a production bundle; `npm run lint` runs ESLint.
+Backend (from `backend/`): `cp .env.example .env` → `npm install` → `npm run db:setup` (migrate + seed cast) → `npm run dev` (`:4000`); Docker: `docker compose up --build`. Vercel serves Express via `backend/api/index.ts` (migrations run separately). Tests: `npm test` (capacity, transitions, pooled fares, cross-user block, cancel rules, last-seat race).
 
-`NEXT_PUBLIC_API_URL` points at the backend and defaults to
-`http://localhost:4000`, which is the backend's default port.
+Env: `NEXT_PUBLIC_API_URL` (default `http://localhost:4000`, prod `https://dtp-backend.vercel.app`). Backend needs `DATABASE_URL`, `JWT_SECRET` — never commit secrets.
 
-## Demo accounts
+## Demo accounts (password: `demo1234`)
 
-Seeded by the backend. All share the password `demo1234`.
+| Name | Role | Phone |
+|---|---|---|
+| Nusrat | Passenger | `+8801710001001` |
+| Rafiq | Passenger | `+8801710001002` |
+| Shirin | Passenger | `+8801710001003` |
+| Jashim (Bullet, 3 seats) | Driver | `+8801810002001` |
+| Kabir (Rocket, 3 seats) | Driver | `+8801810002002` |
+| Admin | Admin | `+8801910009001` |
 
-| Phone | Role |
-|---|---|
-| +880 171 0001001 | Passenger — Nusrat |
-| +880 171 0001002 | Passenger — Rafiq |
-| +880 171 0001003 | Passenger — Shirin |
-| +880 181 0002001 | Driver — Jashim (Bullet, 3 seats) |
-| +880 181 0002002 | Driver — Kabir (Rocket, 3 seats) |
-| +880 191 0009001 | Admin |
+One-tap logins on `/login`.
 
-## API integration
+## Key decisions / limitations / next
 
-`lib/api.ts` is the only module that talks to the backend, and it covers every
-endpoint the server exposes:
+Server-priced fares (client never computes); co-riders stripped to `{ id, firstName, dropStopId, status }`; joins via `POST /rides/:id/join` (≥1 shared leg only); audit via `GET /rides/:id/events`. Limits: I used polling (2.5s) instead of websockets to keep it simple — status updates arrive with a small delay rather than instantly; map autos are client-side simulation; JWT in localStorage (demo). Next: SSE/WS push, PostGIS, cookie auth, Playwright E2E.
 
-| Area | Endpoints used |
-|---|---|
-| Health | `GET /health` |
-| Auth | `POST /auth/login`, `POST /auth/register`, `GET /me` |
-| Network / fare | `GET /network`, `POST /fare/estimate` |
-| Passenger | `POST /rides/request`, `GET /me/active`, `GET /me/history`, `GET /rides/:id`, `POST /rides/:id/cancel`, `POST /rides/:id/rate` |
-| Driver | `GET /driver/state`, `GET /driver/history`, `GET /driver/requests`, `POST /driver/online`, `POST /rides/accept`, `POST /rides/:id/join`, `POST /rides/:id/{arrived,start,complete}`, `GET /rides/:id/events` |
-| Admin | `GET /admin/rides` |
+## AI usage (§8)
 
-A few notes on the ones that are easy to get wrong:
+AI was used as a normal engineering tool throughout — scaffolding, boilerplate review, and docs — and every line was reviewed; I can explain, debug, and redesign any part live.
 
-- **Fares are priced by the server.** The pre-confirm estimate comes from
-  `POST /fare/estimate`, not from a client-side re-implementation, so the
-  advertised price and the charged price cannot drift apart. The bundled
-  `predefiend_routes.js` graph is used for drawing the map and the option list
-  while the server responds.
-- **Passengers never see another rider's fare.** Co-riders arrive from
-  `GET /me/active` as `{ id, firstName, dropStopId, status }` — the server
-  already strips the phone number and the fare, and the store builds zero-fare
-  pseudo-records so nothing can leak through a history view.
-- **Mid-trip joiners** go through `POST /rides/:id/join`. The UI only offers a
-  candidate whose route shares at least one leg with someone already on board,
-  because the server rejects the rest.
-- **The audit trail** (`GET /rides/:id/events`) renders per past trip on the
-  driver console, so "what happened and who did it" stays answerable.
+- Planning: GPT 5.6 for system design and breakdown; editor setup Sol via http://zed.dev/
+- Model usages: MapLibre scaffolding, fare-table UI, Zod schema review, README shape
+- Implementation: built with [ZCode](https://zcode.z.ai/en) + [opencode.ai](https://opencode.ai)
+- Models used: GLM 5.3 Flash, stealth/space-bunny
+- Total usage and cost: **~200M** tokens, est.
+- Apporximate costs upto **$3 USD** for the entire project, including planning, scaffolding, and implementation.
 
-## Project structure
+## Git & assumptions
 
-```
-app/
-  layout.tsx        shell, theme, providers
-  page.tsx          map + ride panel (passenger) / driver quick card
-  login/page.tsx    sign-in, one-tap demo logins for the seeded cast
-  activity/page.tsx driver console and passenger history
-  account/page.tsx  account, demo cast, fare rules
-  admin/page.tsx    read-only operations view (role: admin)
-  loading.tsx       route-level loading state
-  error.tsx         route-level error boundary
-components/
-  store.tsx         server-state mirror, polling loop, all mutations
-  app-nav.tsx       role-aware navigation
-  map/              workspace, ride panel, fleet simulation, route overlays
-  ui/map.tsx        vendored MapLibre wrapper (not first-party)
-lib/
-  api.ts            typed client — the only seam to the backend
-  network.ts        graph, pricing and formatting helpers
-  fleet.ts          demo auto-rickshaw simulation
-  route.ts          OSRM geometry fetching for real road overlays
-```
-
-## Known limitations
-
-- Polling, not push: a lifecycle change shows within ~2.5s, not instantly.
-- The map's demo autos are a client-side simulation and are not connected to
-  the ride database; real rides render from server data.
-- The JWT is in `localStorage`, which is demo-acceptable but not XSS-proof —
-  httpOnly cookies are the production choice.
+Branches `master`, `pre-release`, `release/v1.0.0` + `feature/*`; commits `<type>(<scope>): <desc>`. Assumes: fixed 3-seat Teslas, leg-overlap pooling, paisa cash/TeslaPay, polling OK for MVP.
