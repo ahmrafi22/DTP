@@ -26,6 +26,7 @@ import {
 } from "react";
 import {
   acceptRequests as apiAcceptRequests,
+  advanceRider as apiAdvanceRider,
   advanceRide as apiAdvanceRide,
   cancelRide as apiCancelRide,
   fetchAdminRides,
@@ -35,7 +36,11 @@ import {
   fetchMyActive,
   fetchMyHistory,
   fetchNetwork,
+  fetchOpenRides,
+  dropOffRider as apiDropOffRider,
+  fetchWallet,
   getToken,
+  hopOnRide as apiHopOn,
   joinRide as apiJoinRide,
   login as apiLogin,
   rateRide as apiRateRide,
@@ -43,14 +48,17 @@ import {
   requestRide as apiRequestRide,
   setDriverOnline as apiSetDriverOnline,
   setToken,
+  topUpWallet,
   type ApiActivePassenger,
   type ApiAdminRide,
   type ApiDriverState,
   type ApiNetwork,
+  type ApiOpenRide,
   type ApiRequest,
   type ApiRide,
   type ApiRideEvent,
   type ApiUser,
+  type ApiWallet,
 } from "@/lib/api";
 import {
   getEdge,
@@ -116,6 +124,12 @@ export type RideRequest = {
   updatedAt: string;
   rating?: number;
   cancelReason?: string;
+  /** True when the passenger promised to wait at pickup for a discount. */
+  waitAndSave: boolean;
+  /** How this rider is paying; WALLET settles to the driver on completion. */
+  paymentMethod: "CASH" | "WALLET";
+  /** True once the fare has been moved to the driver's wallet. */
+  settled: boolean;
   /** First name from the server (works for non-cast users too). */
   passengerName?: string;
 };
@@ -135,6 +149,11 @@ export type Trip = {
   seatsTaken: number;
   capacity: number;
   events: TripEvent[];
+  /**
+   * When the ride last changed status. For a STARTED trip that is the moment
+   * the driver set off, which is what the 90-second demo run is measured from.
+   */
+  updatedAt: string;
 };
 
 export type DtpState = {
@@ -215,6 +234,9 @@ const toRideRequest = (r: ApiRequest): RideRequest => ({
   tripId: r.rideId,
   rating: r.rating ?? undefined,
   cancelReason: r.cancelReason ?? undefined,
+  waitAndSave: r.waitAndSave ?? false,
+  paymentMethod: r.paymentMethod ?? "CASH",
+  settled: r.settled ?? false,
 });
 
 /** Adapt a raw API request for display components. */
@@ -235,6 +257,7 @@ const toTrip = (ride: ApiRide, requestIds: string[], events?: ApiRideEvent[]): T
   requestIds,
   seatsTaken: ride.seatsTaken,
   capacity: ride.capacity,
+  updatedAt: ride.updatedAt,
   // GET /driver/history carries the audit trail; the polling endpoints do not,
   // so it is threaded through rather than re-derived from the client.
   events: toTripEvents(events ?? ride.events),
@@ -275,7 +298,33 @@ type DtpStore = {
   adminRides: ApiAdminRide[];
   /** The authoritative stop/leg/corridor graph (GET /network). */
   network: ApiNetwork | null;
+  /** The signed-in user's TeslaPay balance (GET /wallet). */
+  wallet: ApiWallet | null;
+  /** Credit ৳100 to the signed-in user's wallet. */
+  topUp: () => Promise<void>;
+  /** Rides with a free seat that this passenger can still board. */
+  openRides: ApiOpenRide[];
+  /** Finished rides the passenger has closed out of the panel. */
+  dismissed: string[];
+  /** The open ride whose auto the user tapped on the map, if any. */
+  selectedOpenRideId: string | null;
+  /** Select/deselect a ride from the map markers. */
+  selectOpenRide: (rideId: string | null) => void;
+  /** Board a running ride at a stop it has not passed yet. */
+  hopOn: (
+    rideId: string,
+    pickupStopId: string,
+    dropStopId: string,
+    waitAndSave?: boolean,
+    paymentMethod?: "CASH" | "WALLET",
+  ) => Promise<void>;
+  /** Drop one rider off; the ride completes itself when the last one leaves. */
+  dropOff: (rideId: string, requestId: string) => Promise<void>;
+  /** Advance one rider a single step, independent of the rest of the trip. */
+  advanceRider: (rideId: string, requestId: string) => Promise<void>;
   busy: boolean;
+  /** Action key currently in flight, so its button can show a loader. */
+  pendingAction: string | null;
   error: string | null;
 };
 
@@ -297,7 +346,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [driverState, setDriverState] = useState<ApiDriverState | null>(null);
   const [adminRides, setAdminRides] = useState<ApiAdminRide[]>([]);
   const [network, setNetwork] = useState<ApiNetwork | null>(null);
+  const [wallet, setWallet] = useState<ApiWallet | null>(null);
+  const [openRides, setOpenRides] = useState<ApiOpenRide[]>([]);
+  const [selectedOpenRideId, setSelectedOpenRideId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const meRef = useRef(me);
@@ -307,9 +361,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ---------- refreshers ----------
 
   const refreshPassenger = useCallback(async () => {
-    const [active, history] = await Promise.all([fetchMyActive(), fetchMyHistory()]);
+    const [active, history, open] = await Promise.all([
+      fetchMyActive(),
+      fetchMyHistory(),
+      fetchOpenRides().catch(() => ({ rides: [] as ApiOpenRide[] })),
+    ]);
     setActiveRide(active);
-    const requests: RideRequest[] = [...history.requests.map(toRideRequest)];
+    setOpenRides(open.rides);
+    // A cancelled ride leaves the UI immediately — it should not linger in
+    // the panel or on /activity waiting for a reload. The row itself is never
+    // deleted server-side; this is purely what the client mirrors.
+    const requests: RideRequest[] = history.requests
+      .filter((r) => r.status !== "CANCELLED")
+      .map(toRideRequest);
     const trips: Trip[] = [];
     if (active) {
       requests.push(toRideRequest(active.request));
@@ -327,8 +391,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           stopIds: [],
           status: co.status as RideStatus,
           tripId: active.trip?.id ?? null,
-          fare: { baseFare: 0, distanceCharge: 0, poolDiscount: 0, total: 0, lines: [] },
+          fare: { baseFare: 0, distanceCharge: 0, poolDiscount: 0, waitSaveDiscount: 0, total: 0, lines: [] },
           createdAt: "",
+          waitAndSave: false,
+          paymentMethod: "CASH",
+          settled: false,
           updatedAt: "",
         });
       }
@@ -374,6 +441,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
+  // Wallets belong to whoever is signed in, whoever their role.
+  const refreshWallet = useCallback(async () => {
+    if (!meRef.current) {
+      setWallet(null);
+      return;
+    }
+    setWallet(await fetchWallet());
+  }, []);
+
   const refreshAdmin = useCallback(async () => {
     const { rides } = await fetchAdminRides();
     setAdminRides(rides);
@@ -395,6 +471,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setActiveRide(null);
     setDriverState(null);
     setAdminRides([]);
+    setWallet(null);
+    setOpenRides([]);
+    setSelectedOpenRideId(null);
     setState(EMPTY_STATE);
   }, []);
 
@@ -409,6 +488,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then(({ user }) => setMe(user))
       .catch(() => setToken(null));
   }, []);
+
+  // Pull the balance in with the rest of the signed-in state.
+  useEffect(() => {
+    if (!me) {
+      setWallet(null);
+      return;
+    }
+    void refreshWallet();
+  }, [me?.id, refreshWallet]);
 
   // ---------- polling (the "realtime" for this MVP) ----------
 
@@ -446,9 +534,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * (the login form) can. Swallowing the error here is what previously made
    * a failed sign-in look like a success.
    */
-  const run = useCallback(async (fn: () => Promise<void>): Promise<void> => {
+  const run = useCallback(
+    async (fn: () => Promise<void>, actionKey?: string): Promise<void> => {
     setBusy(true);
     busyRef.current = true;
+    setPendingAction(actionKey ?? null);
     setError(null);
     try {
       await fn();
@@ -458,8 +548,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     } finally {
       setBusy(false);
       busyRef.current = false;
+      setPendingAction(null);
     }
-  }, []);
+  },
+  []);
 
   const login = useCallback(
     (phone: string, password: string) =>
@@ -479,6 +571,57 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setToken(token);
         setMe(user);
         setState((s) => ({ ...s, sessionPersonaId: user.id }));
+      }),
+    [run],
+  );
+
+  const selectOpenRide = useCallback((rideId: string | null) => {
+    setSelectedOpenRideId(rideId);
+  }, []);
+
+  const dismissRide = useCallback((requestId: string) => {
+    setDismissed((cur) => (cur.includes(requestId) ? cur : [...cur, requestId]));
+  }, []);
+
+  const hopOn = useCallback(
+    (
+    rideId: string,
+    pickupStopId: string,
+    dropStopId: string,
+    waitAndSave = false,
+    paymentMethod: "CASH" | "WALLET" = "CASH",
+  ) =>
+      run(async () => {
+        await apiHopOn(rideId, { pickupStopId, dropStopId, waitAndSave, paymentMethod });
+        setSelectedOpenRideId(null);
+        await refreshPassenger();
+      }),
+    [run, refreshPassenger],
+  );
+
+  const advanceRider = useCallback(
+    (rideId: string, requestId: string) =>
+      run(async () => {
+        await apiAdvanceRider(rideId, requestId);
+        await refreshDriver();
+      }),
+    [run, refreshDriver],
+  );
+
+  const dropOff = useCallback(
+    (rideId: string, requestId: string) =>
+      run(async () => {
+        await apiDropOffRider(rideId, requestId);
+        await refreshDriver();
+      }),
+    [run, refreshDriver],
+  );
+
+  const topUp = useCallback(
+    () =>
+      run(async () => {
+        const updated = await topUpWallet();
+        setWallet({ balancePaisa: updated.balancePaisa, currency: updated.currency });
       }),
     [run],
   );
@@ -553,12 +696,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             await apiRateRide(action.requestId, action.rating);
             await refreshPassenger();
             break;
+          case "COMPLETE_RIDE":
+            await apiAdvanceRide(action.rideId, "complete");
+            await refreshPassenger();
+            break;
+          case "RIDER_ADVANCE":
+            await apiAdvanceRider(action.rideId, action.requestId);
+            await refreshDriver();
+            break;
+          case "DROP_OFF":
+            await apiDropOffRider(action.rideId, action.requestId);
+            await refreshDriver();
+            break;
+          case "CLOSE_RIDE":
+            // Local only: drop the finished ride from the mirror so the booking
+            // form comes back and the panel is ready for the next request.
+            dismissRide(action.requestId);
+            await refreshPassenger();
+            break;
         }
-      }).catch(() => {
+      }, actionKey(action)).catch(() => {
         // Already surfaced via `error`; nothing further to do here.
       });
     },
-    [run, signOut, refreshDriver, refreshPassenger, state.onlineDriverIds],
+    [run, signOut, dismissRide, refreshDriver, refreshPassenger, state.onlineDriverIds],
   );
 
   // ---------- derived ----------
@@ -599,10 +760,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       driverState,
       adminRides,
       network,
+      wallet,
+      topUp,
+      openRides,
+      selectedOpenRideId,
+      selectOpenRide,
+      hopOn,
+      dropOff,
+      advanceRider,
       busy,
+      pendingAction,
+      dismissed,
       error,
     };
-  }, [state, me, dispatch, login, register, signOut, resetDemo, refresh, activeRide, driverState, adminRides, network, busy, error]);
+  }, [state, me, dispatch, login, register, signOut, resetDemo, refresh, activeRide, driverState, adminRides, network, wallet, topUp, openRides, selectedOpenRideId, selectOpenRide, hopOn, dropOff, advanceRider, busy, pendingAction, dismissed, error]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
@@ -633,6 +804,23 @@ export function useActiveTrip() {
 
 // ---------- action union (each maps to exactly one endpoint) ----------
 
+const actionKey = (a: DtpAction): string => {
+  switch (a.type) {
+    case "ADVANCE_TRIP": return `advance:${a.tripId}:${a.event}`;
+    case "ACCEPT_REQUESTS": return `accept:${a.requestIds.join(",")}`;
+    case "JOIN_RIDER": return `join:${a.requestId}`;
+    case "REQUEST_RIDE": return `request:${a.pickupStopId}>${a.dropStopId}`;
+    case "CANCEL_RIDE": return `cancel:${a.requestId}`;
+    case "RATE_RIDE": return `rate:${a.requestId}`;
+    case "TOGGLE_ONLINE": return "online";
+    case "COMPLETE_RIDE": return `complete:${a.rideId}`;
+    case "CLOSE_RIDE": return `close:${a.requestId}`;
+    case "DROP_OFF": return `dropoff:${a.requestId}`;
+    case "RIDER_ADVANCE": return `rider:${a.requestId}`;
+    default: return a.type;
+  }
+};
+
 export type DtpAction =
   | { type: "SIGN_IN"; personaId: string }
   | { type: "SIGN_OUT" }
@@ -643,6 +831,8 @@ export type DtpAction =
       dropStopId: string;
       routeId: string | null;
       seats?: number;
+      waitAndSave?: boolean;
+      paymentMethod?: "CASH" | "WALLET";
       /** Stable across double-taps so the server replays instead of duplicating. */
       idempotencyKey: string;
     }
@@ -654,4 +844,10 @@ export type DtpAction =
       tripId: string;
       event: "DRIVER_ARRIVED" | "STARTED" | "COMPLETED";
     }
-  | { type: "RATE_RIDE"; requestId: string; rating: number }; // POST /rides/:id/rate
+  | { type: "RATE_RIDE"; requestId: string; rating: number } // POST /rides/:id/rate
+  /** Passenger closes out a running trip. POST /rides/:id/complete */
+  | { type: "COMPLETE_RIDE"; rideId: string }
+  /** Dismiss a finished ride from the panel so a new one can be booked. */
+  | { type: "RIDER_ADVANCE"; rideId: string; requestId: string }
+  | { type: "DROP_OFF"; rideId: string; requestId: string }
+  | { type: "CLOSE_RIDE"; requestId: string };
