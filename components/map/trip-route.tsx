@@ -38,11 +38,28 @@ const coordOf = (stopId: string): [number, number] => [
  * visibly different position for the same ride. Persisting to localStorage
  * means the first window's result is reused by all the others.
  *
- * A `null` entry records "looked and it was unavailable" so we stop retrying.
- * The map is effectively static, so entries are kept for a day.
+ * Only *successful* geometry is cached. An earlier version also cached
+ * failures as a `null`, which meant one timeout or one 429 from the shared
+ * public OSRM server pinned that route to straight lines for the full day —
+ * across reloads and restarts — even though the service was reachable again
+ * seconds later. Because every window reads this cache, a single unlucky fetch
+ * degraded the whole fleet's routes. Failures are now simply retried, and any
+ * `null` left behind by an older build is ignored on read so a poisoned cache
+ * heals itself instead of needing a manual clear.
+ *
+ * The map is effectively static, so successful entries are kept for a day.
  */
 const GEOMETRY_CACHE_KEY = "dtp-route-geometry";
 const GEOMETRY_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Per-attempt cap. Generous, because the public OSRM demo server is slow. */
+const GEOMETRY_TIMEOUT_MS = 12_000;
+
+/** Attempts before settling for the dashed skeleton for this mount. */
+const GEOMETRY_MAX_ATTEMPTS = 3;
+
+/** Backoff between attempts; linear, so recovery starts almost immediately. */
+const GEOMETRY_RETRY_MS = 1_500;
 
 type GeometryMap = Record<string, { coords: [number, number][] | null; at: number }>;
 
@@ -54,7 +71,11 @@ function readSharedCache(): GeometryMap {
     const parsed = JSON.parse(raw) as GeometryMap;
     const cutoff = Date.now() - GEOMETRY_TTL_MS;
     return Object.fromEntries(
-      Object.entries(parsed).filter(([, v]) => v && v.at > cutoff),
+      // `coords: null` is a cached failure from an older build. Dropping it
+      // here is what lets an already-poisoned cache recover on its own.
+      Object.entries(parsed).filter(
+        ([, v]) => v && v.coords !== null && v.at > cutoff,
+      ),
     );
   } catch {
     return {};
@@ -75,7 +96,14 @@ let geometryCache = new Map<string, [number, number][] | null>(
   Object.entries(readSharedCache()).map(([k, v]) => [k, v.coords]),
 );
 
-function cacheGeometry(key: string, coords: [number, number][] | null): void {
+/**
+ * Store geometry that is known good.
+ *
+ * Deliberately typed to reject `null`: caching a failure is what turned a
+ * transient OSRM error into straight-line routes for a whole day, and there is
+ * no reason for any caller to be able to do that again.
+ */
+function cacheGeometry(key: string, coords: [number, number][]): void {
   geometryCache.set(key, coords);
   const now = Date.now();
   const next: GeometryMap = {};
@@ -132,29 +160,41 @@ export function TripRoute({
     if (stopIds.length < 2 || !stopIds.every((id) => NODES[id])) return;
 
     let cancelled = false;
-    const waypoints = stopIds
-      .map((id) => `${NODES[id].lng},${NODES[id].lat}`)
-      .join(";");
-    const url = `https://router.project-osrm.org/route/v1/driving/${waypoints}?overview=full&geometries=geojson`;
-    fetch(url, { signal: AbortSignal.timeout(8000) })
-      .then((res) => {
+    let attempt = 0;
+    let timer: number | undefined;
+
+    const run = async (): Promise<void> => {
+      const waypoints = stopIds
+        .map((id) => `${NODES[id].lng},${NODES[id].lat}`)
+        .join(";");
+      const url = `https://router.project-osrm.org/route/v1/driving/${waypoints}?overview=full&geometries=geojson`;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(GEOMETRY_TIMEOUT_MS) });
         if (!res.ok) throw new Error(`OSRM ${res.status}`);
-        return res.json();
-      })
-      .then((json) => {
+        const json = await res.json();
         const coords = json?.routes?.[0]?.geometry?.coordinates;
         if (!Array.isArray(coords) || coords.length < 2)
           throw new Error("no geometry");
+        // Success is cached, so every other tab reuses the same real geometry
+        // and they all agree on where the auto is.
         cacheGeometry(key, coords);
         if (!cancelled) setFetched({ key, coords });
-      })
-      .catch(() => {
-        // offline / rate-limited: keep showing the straight-line skeleton
-        cacheGeometry(key, null);
-        if (!cancelled) setFetched({ key, coords: null });
-      });
+      } catch {
+        // A failure is NOT cached. The shared public OSRM server rate-limits
+        // and occasionally stalls; caching that outcome turned a momentary blip
+        // into a full day of straight-line routes. Retry a couple of times
+        // instead, and only settle for the dashed skeleton if all of them fail.
+        attempt += 1;
+        if (!cancelled && attempt < GEOMETRY_MAX_ATTEMPTS) {
+          timer = window.setTimeout(() => void run(), GEOMETRY_RETRY_MS * attempt);
+        }
+      }
+    };
+
+    void run();
     return () => {
       cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [key, stopIds]);
 

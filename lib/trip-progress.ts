@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { serverNow } from "./server-clock";
 
 /**
  * Trip progress for the live ride drawn on the map.
@@ -25,8 +26,11 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
  * Fraction of the route covered, 0 → 1.
  *
  * Returns 0 until the trip reaches STARTED, then ticks until 1. `startedAt`
- * is the moment the ride transitioned to STARTED; the server stamps
- * `updatedAt` on every transition, so that is where it comes from.
+ * must be the ride's *immutable* STARTED instant (`rides.started_at`), never
+ * `updated_at`: the latter moves on every later transition, so anchoring to it
+ * makes two browsers disagree and rewinds the auto when a rider is dropped off.
+ * Elapsed time comes from `serverNow()` so every session counts from the same
+ * clock and the auto sits in the same place in all of them.
  */
 export function useTripProgress(
   running: boolean,
@@ -48,7 +52,7 @@ export function useTripProgress(
 
     // A stale STARTED (e.g. the tab was reopened much later) shows the trip
     // finished rather than snapping it back to the start.
-    const tick = () => setProgress(clamp01((Date.now() - start) / TRIP_DURATION_MS));
+    const tick = () => setProgress(clamp01((serverNow() - start) / TRIP_DURATION_MS));
 
     tick();
     const timer = window.setInterval(tick, TICK_MS);

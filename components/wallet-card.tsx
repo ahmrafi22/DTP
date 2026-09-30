@@ -5,6 +5,7 @@ import { IoAddCircleOutline, IoWalletOutline } from "react-icons/io5";
 import { useStore } from "@/components/store";
 import { TOPUP_TAKA } from "@/lib/api";
 import { formatTaka } from "@/lib/network";
+import { cn } from "@/lib/utils";
 
 /**
  * TeslaPay wallet card: the balance, a one-tap ৳100 top-up, and the most
@@ -20,6 +21,7 @@ export function WalletCard() {
   const [adding, setAdding] = useState(false);
 
   const balance = wallet?.balancePaisa ?? 0;
+  const owed = balance < 0 ? -balance : 0;
 
   const onAdd = async () => {
     setAdding(true);
@@ -42,7 +44,12 @@ export function WalletCard() {
           <p className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
             Balance
           </p>
-          <p className="text-foreground text-2xl font-black tabular-nums">
+          <p
+            className={cn(
+              "text-2xl font-black tabular-nums",
+              owed > 0 ? "text-destructive" : "text-foreground",
+            )}
+          >
             {formatTaka(balance)}
           </p>
         </div>
@@ -57,6 +64,13 @@ export function WalletCard() {
           {adding || busy ? "Adding…" : `Add ${TOPUP_TAKA} BDT`}
         </button>
       </div>
+
+      {owed > 0 && (
+        <p className="bg-destructive/10 text-destructive mt-3 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold">
+          {formatTaka(owed)} owed — a TeslaCash ride was charged with no
+          balance left. Top up to clear it.
+        </p>
+      )}
 
       {error && (
         <p

@@ -218,14 +218,21 @@ function DriverConsole() {
 
   // How far the trip has run, on the same 90-second budget the map animation
   // uses, so the console and the map agree on when the ride is over.
+  // Anchored to the ride's immutable `startedAt`, not `updatedAt`, so it is
+  // measured from the same instant in every browser session.
   const tripProgress = useTripProgress(
     activeTrip?.status === "STARTED",
-    activeTrip?.updatedAt,
+    activeTrip?.startedAt,
   );
 
   // Reaching the final destination ends the trip on its own — nobody has to
   // press "Complete". Guarded so it fires once per ride and never fights the
   // driver if they are already transitioning manually.
+  //
+  // This completes *every* rider on the trip, however many there are: the auto
+  // has reached the end of the run, so everyone on board is finished. A rider
+  // dropped off part-way through has already been completed individually by
+  // their own drop-off, and the final stop is what closes the rest.
   const autoCompletedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeTrip || activeTrip.status !== "STARTED") return;
@@ -461,7 +468,7 @@ function RiderRow({
       case "MATCHED":
         return {
           key: `rider:${rider.id}`,
-          label: `Mark arrived with ${firstName}`,
+          label: `I've arrived — ${firstName}`,
           run: () => dispatch({ type: "RIDER_ADVANCE", rideId: ride.id, requestId: rider.id }),
         };
       case "DRIVER_ARRIVED":
@@ -627,14 +634,22 @@ function ActiveTripCard({ trip }: { trip: NonNullable<ReturnType<typeof useActiv
 
   if (!persona) return null;
 
-  const action =
-    trip.status === "MATCHED"
+  // A pooled trip has no single trip-wide control. POST /rides/:id/{arrived,
+  // start,complete} moves *every* rider at once, which is right for one
+  // passenger and wrong for several: two people get picked up and dropped off
+  // at different stops, so one button would claim the driver had arrived for
+  // people still miles away. Solo trips keep it — there is nothing to
+  // disambiguate, and it is the quicker path through the demo.
+  const soloTrip = riders.length <= 1;
+  const action = soloTrip
+    ? trip.status === "MATCHED"
       ? ({ label: "I've arrived", event: "DRIVER_ARRIVED" } as const)
       : trip.status === "DRIVER_ARRIVED"
         ? ({ label: "Start trip", event: "STARTED" } as const)
         : trip.status === "STARTED"
           ? ({ label: "Complete trip", event: "COMPLETED" } as const)
-          : null;
+          : null
+    : null;
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={spring}>
@@ -732,14 +747,16 @@ function ActiveTripCard({ trip }: { trip: NonNullable<ReturnType<typeof useActiv
         )}
         {/* Demo shortcut: jump the trip to COMPLETED without waiting out the
             full 90 seconds. The server still enforces the real transition
-            (STARTED -> COMPLETED), so this is not a bypass. */}
+            (STARTED -> COMPLETED), so this is not a bypass. It does exactly
+            what the timer does at the final stop — everyone on board is
+            marked COMPLETED. */}
         {trip.status === "STARTED" && (
           <button
             type="button"
             onClick={() => dispatch({ type: "ADVANCE_TRIP", tripId: trip.id, event: "COMPLETED" })}
             className="border-border text-muted-foreground hover:bg-muted hover:text-foreground mt-2 w-full rounded-xl border py-2 text-[11px] font-bold transition-all"
           >
-            Skip to end of ride 
+            Skip to end of ride
           </button>
         )}
       </div>

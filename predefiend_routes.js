@@ -306,6 +306,13 @@ export function shortestPath(fromId, toId, weight = 'km') {
   return { stops, legs, total: Math.round(dist[toId] * 10) / 10 };
 }
 
-export const formatTaka = (paisa) => `৳${(paisa / 100).toFixed(paisa % 100 ? 2 : 0)}`;
+// Negative amounts are real: a TeslaCash balance can go into overdraft when a
+// fare is settled, so the sign belongs in front of the symbol ("-৳356.60")
+// rather than trailing the number ("৳-356.60"), which reads as a typo.
+export const formatTaka = (paisa) => {
+  const sign = paisa < 0 ? "-" : "";
+  const abs = Math.abs(paisa);
+  return `${sign}৳${(abs / 100).toFixed(abs % 100 ? 2 : 0)}`;
+};
 
 export default { NODES, EDGES, ADJACENCY, ROUTES, getRoute, getEdge, legsBetween, findRoutes, sharedLegs, isPoolable, priceLegs, shortestPath };

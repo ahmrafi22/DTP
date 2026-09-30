@@ -157,9 +157,10 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
   const activeTrip = useActiveTrip();
   const { state, activeRide } = useStore();
 
-  // The vehicle only moves while the ride is STARTED. `updatedAt` is the
-  // server's timestamp for the transition into that state, which is where the
-  // 90-second run is measured from.
+  // The vehicle only moves while the ride is STARTED, measured from the ride's
+  // immutable `startedAt` against the shared server clock. Anchoring to the
+  // request's `updatedAt` instead would move every time a rider is dropped
+  // off, so two browsers could show the same auto in different places.
   const liveRequest =
     activeRequest ??
     state.requests.find(
@@ -168,7 +169,7 @@ export function MapWorkspace({ routes }: { routes: RouteData[] }) {
     null;
   const tripProgress = useTripProgress(
     (activeRequest?.status ?? liveRequest?.status) === "STARTED",
-    liveRequest?.updatedAt,
+    activeTrip?.startedAt ?? activeRide?.trip?.startedAt ?? null,
   );
 
   const overlay = useMemo(() => {

@@ -109,6 +109,7 @@ export function OpenRideCard({ ride }: { ride: ApiOpenRide }) {
   const { hopOn, selectOpenRide, busy, error } = useStore();
   const [boardAt, setBoardAt] = useState<string | null>(null);
   const [leaveAt, setLeaveAt] = useState<string | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"CASH" | "WALLET">("CASH");
 
   const ahead = ride.aheadStopIds;
   const canGo = Boolean(boardAt && leaveAt && leaveAt !== boardAt);
@@ -194,6 +195,27 @@ export function OpenRideCard({ ride }: { ride: ApiOpenRide }) {
         emptyHint={boardAt ? "This is the last stop on the trip" : "Pick a boarding stop first"}
       />
 
+      {/* A joining rider has no wait-and-save promise to make — the car is already
+          out — so the only choice is how to pay. */}
+      <div className="border-border bg-card mt-2.5 flex rounded-xl border p-1">
+        {(["CASH", "WALLET"] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setPaymentMethod(m)}
+            aria-pressed={paymentMethod === m}
+            className={cn(
+              "flex-1 rounded-lg py-2 text-[11px] font-bold transition-all",
+              paymentMethod === m
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            {m === "CASH" ? "Cash" : "TeslaCash"}
+          </button>
+        ))}
+      </div>
+
       {error && (
         <p
           role="alert"
@@ -210,7 +232,7 @@ export function OpenRideCard({ ride }: { ride: ApiOpenRide }) {
           if (!boardAt || !leaveAt) return;
           // `hopOn` surfaces its own failure through the store's `error`;
           // swallow here so it never becomes an unhandled rejection.
-          void hopOn(ride.rideId, boardAt, leaveAt).catch(() => {});
+          void hopOn(ride.rideId, boardAt, leaveAt, paymentMethod).catch(() => {});
         }}
         className="bg-primary text-primary-foreground hover:bg-primary/90 mt-3 w-full rounded-xl py-2.5 text-xs font-bold transition-all disabled:pointer-events-none disabled:opacity-50"
       >

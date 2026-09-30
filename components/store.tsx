@@ -37,6 +37,7 @@ import {
   fetchMyHistory,
   fetchNetwork,
   fetchOpenRides,
+  fetchServerTime,
   dropOffRider as apiDropOffRider,
   fetchWallet,
   getToken,
@@ -67,6 +68,7 @@ import {
   type Fare,
   type FareLine,
 } from "@/lib/network";
+import { setServerOffset } from "@/lib/server-clock";
 
 export type { Fare, FareLine };
 
@@ -150,10 +152,17 @@ export type Trip = {
   capacity: number;
   events: TripEvent[];
   /**
-   * When the ride last changed status. For a STARTED trip that is the moment
-   * the driver set off, which is what the 90-second demo run is measured from.
+   * When the ride last changed status. For diagnostics — NOT the trip clock:
+   * it moves on every transition, so anchoring a running trip to it would make
+   * two browsers disagree about where the auto is.
    */
   updatedAt: string;
+  /**
+   * The immutable instant the ride entered STARTED, or null if it never has.
+   * This is what the trip animation anchors to, so every browser session
+   * draws the auto in the same place for the whole ride.
+   */
+  startedAt: string | null;
 };
 
 export type DtpState = {
@@ -258,6 +267,9 @@ const toTrip = (ride: ApiRide, requestIds: string[], events?: ApiRideEvent[]): T
   seatsTaken: ride.seatsTaken,
   capacity: ride.capacity,
   updatedAt: ride.updatedAt,
+  // The trip clock anchor. Null on older payloads, where the animation simply
+  // falls back to not moving rather than guessing a start time.
+  startedAt: ride.startedAt ?? null,
   // GET /driver/history carries the audit trail; the polling endpoints do not,
   // so it is threaded through rather than re-derived from the client.
   events: toTripEvents(events ?? ride.events),
@@ -315,7 +327,6 @@ type DtpStore = {
     rideId: string,
     pickupStopId: string,
     dropStopId: string,
-    waitAndSave?: boolean,
     paymentMethod?: "CASH" | "WALLET",
   ) => Promise<void>;
   /** Drop one rider off; the ride completes itself when the last one leaves. */
@@ -483,6 +494,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     fetchNetwork().then(setNetwork).catch(() => {
       // The stop picker falls back to the bundled graph, so this is not fatal.
     });
+    // Anchor the shared clock before anything animates a trip. Without this,
+    // a machine whose clock is off by a few seconds would draw the auto
+    // somewhere else than every other session watching the same ride.
+    void fetchServerTime().then((time) => setServerOffset(time));
     if (!getToken()) return;
     fetchMe()
       .then(({ user }) => setMe(user))
@@ -588,11 +603,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     rideId: string,
     pickupStopId: string,
     dropStopId: string,
-    waitAndSave = false,
     paymentMethod: "CASH" | "WALLET" = "CASH",
   ) =>
       run(async () => {
-        await apiHopOn(rideId, { pickupStopId, dropStopId, waitAndSave, paymentMethod });
+        await apiHopOn(rideId, { pickupStopId, dropStopId, paymentMethod });
         setSelectedOpenRideId(null);
         await refreshPassenger();
       }),
@@ -661,6 +675,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               dropStopId: action.dropStopId,
               routeId: action.routeId,
               seats: action.seats,
+              // Both were accepted on the action but never forwarded, so a
+              // request made through this path silently lost the rider's
+              // wait-and-save promise and their chosen payment method.
+              waitAndSave: action.waitAndSave,
+              paymentMethod: action.paymentMethod,
               // Stable per attempt so a double-tap replays instead of
               // creating a second request server-side.
               idempotencyKey: action.idempotencyKey,

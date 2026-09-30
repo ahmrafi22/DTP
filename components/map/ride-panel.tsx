@@ -730,7 +730,9 @@ function TrackingCard({ request }: { request: RideRequest }) {
       )}
 
       {/* A passenger can close out a run that has clearly finished, so the
-          ride never gets stuck at STARTED when the driver walks away. */}
+          ride never gets stuck at STARTED when the driver walks away. Like
+          the driver's 90-second timer, this finishes the whole trip — at the
+          final stop everyone on board is done. */}
       {request.status === "STARTED" && request.tripId && (
         <button
           type="button"

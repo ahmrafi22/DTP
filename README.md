@@ -90,7 +90,7 @@ AI was used as a normal engineering tool throughout — scaffolding, boilerplate
 - Model usages: MapLibre scaffolding, fare-table UI, Zod schema review, README shape
 - Implementation: built with [ZCode](https://zcode.z.ai/en) + [opencode.ai](https://opencode.ai)
 - Models used: GLM 5.3 Flash, stealth/space-bunny
-- Total usage and cost: **~200M** tokens, est.
+- Total usage and cost: **~140M** tokens, est.
 - Apporximate costs upto **$3 USD** for the entire project, including planning, scaffolding, and implementation.
 
 ## Git & assumptions

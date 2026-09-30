@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { IoSwapVertical } from "react-icons/io5";
 import { useStore } from "@/components/store";
-import { WAIT_SAVE_DISCOUNT_PCT, WAIT_SAVE_MINUTES } from "@/lib/api";
 import { stopName } from "@/lib/stops";
 import { cn } from "@/lib/utils";
 
@@ -13,13 +12,18 @@ import { cn } from "@/lib/utils";
  * Every other rider's open trip is listed here. Picking one lets you board at
  * any stop the auto has not reached yet, which is the whole point: Nusrat's
  * ride should not be Rafiq's loss just because it started first.
+ *
+ * A joiner gets no Wait & save toggle. That promise belongs to the passenger
+ * who booked first and held the car while it filled — a second rider joining a
+ * car that is already out delays nobody, so there is nothing to discount. They
+ * choose Cash or TeslaCash instead.
  */
 export function HopOnCard() {
   const { openRides, hopOn, busy, error, persona, vehicle } = useStore();
   const [expanded, setExpanded] = useState<string | null>(null);
   const [boardAt, setBoardAt] = useState<string | null>(null);
   const [leaveAt, setLeaveAt] = useState<string | null>(null);
-  const [waitAndSave, setWaitAndSave] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<"CASH" | "WALLET">("CASH");
 
   // Nobody hops into their own trip, and drivers do not use this panel at all.
   if (persona?.role !== "passenger" || vehicle) return null;
@@ -28,7 +32,7 @@ export function HopOnCard() {
   const reset = () => {
     setBoardAt(null);
     setLeaveAt(null);
-    setWaitAndSave(false);
+    setPaymentMethod("CASH");
   };
 
   return (
@@ -102,40 +106,30 @@ export function HopOnCard() {
                     disabled={!boardAt}
                   />
 
-                  {/* Wait and Save: same extra discount, promise to wait. */}
-                  <button
-                    type="button"
-                    onClick={() => setWaitAndSave((v) => !v)}
-                    aria-pressed={waitAndSave}
-                    className={cn(
-                      "flex w-full items-center justify-between gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors",
-                      waitAndSave
-                        ? "border-primary bg-secondary/60"
-                        : "border-border hover:bg-muted",
-                    )}
-                  >
-                    <span className="min-w-0">
-                      <span className="text-foreground block text-[11px] font-bold">
-                        Wait &amp; save {WAIT_SAVE_DISCOUNT_PCT}%
-                      </span>
-                      <span className="text-muted-foreground block text-[10px]">
-                        Wait up to {WAIT_SAVE_MINUTES} min at pickup
-                      </span>
-                    </span>
-                    <span
-                      className={cn(
-                        "relative h-5 w-9 shrink-0 rounded-full transition-colors",
-                        waitAndSave ? "bg-primary" : "bg-muted",
-                      )}
-                    >
-                      <span
+{/* Cash or TeslaCash, chosen per ride. */}
+                  <div className="border-border bg-card flex rounded-xl border p-1">
+                    {(["CASH", "WALLET"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setPaymentMethod(m)}
+                        aria-pressed={paymentMethod === m}
                         className={cn(
-                          "absolute top-0.5 size-4 rounded-full bg-white transition-all",
-                          waitAndSave ? "left-[18px]" : "left-0.5",
+                          "flex-1 rounded-lg py-2 text-[11px] font-bold transition-all",
+                          paymentMethod === m
+                            ? "bg-primary text-primary-foreground"
+                            : "text-muted-foreground hover:bg-muted",
                         )}
-                      />
-                    </span>
-                  </button>
+                      >
+                        {m === "CASH" ? "Cash" : "TeslaCash"}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-muted-foreground text-center text-[10px]">
+                    {paymentMethod === "WALLET"
+                      ? "Taken from your TeslaCash balance when you're dropped off. It can go negative — top up to settle it."
+                      : "Pay the driver in cash when you're dropped off."}
+                  </p>
 
                   {error && (
                     <p
@@ -151,7 +145,7 @@ export function HopOnCard() {
                     disabled={!boardable || busy}
                     onClick={() => {
                       if (!boardAt || !leaveAt) return;
-                      void hopOn(r.rideId, boardAt, leaveAt, waitAndSave)
+                      void hopOn(r.rideId, boardAt, leaveAt, paymentMethod)
                         .then(() => setExpanded(null))
                         .catch(() => {
                           // Already shown via the store's `error` banner.

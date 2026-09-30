@@ -172,6 +172,13 @@ export type ApiRide = {
   capacity: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Immutable STARTED instant, or null if the ride never started.
+   *
+   * This — not `updatedAt` — is what every client anchors the trip clock to,
+   * so the same auto is in the same place in every browser session.
+   */
+  startedAt: string | null;
   /** Present on trips from GET /driver/history. */
   events?: ApiRideEvent[];
   /** Present on the active trip inside GET /driver/state. */
@@ -280,6 +287,25 @@ export async function fetchMe() {
 /** The authoritative stop/leg/corridor graph, for pickers and the map. */
 export async function fetchNetwork() {
   return api.get<ApiNetwork>("/network");
+}
+
+/**
+ * The server's current time, from the unauthenticated GET /health payload.
+ *
+ * Used to re-anchor the shared clock so trip animations land on the same
+ * position in every browser, whatever each machine's local clock says.
+ */
+export async function fetchServerTime(): Promise<string | null> {
+  try {
+    const res = await fetch(`${API_URL}/health`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => null)) as { time?: string } | null;
+    return data?.time ?? null;
+  } catch {
+    // The clock stays on local time; animations still run, just not in sync
+    // across machines.
+    return null;
+  }
 }
 
 /**
@@ -464,14 +490,20 @@ export async function fetchOpenRides() {
   return api.get<{ rides: ApiOpenRide[] }>("/rides/open");
 }
 
-/** Board a running ride at a stop it has not passed yet. */
+/**
+ * Board a running ride at a stop it has not passed yet.
+ *
+ * A joining rider is the second or later passenger on the trip, so there is no
+ * wait-and-save promise to make — only a choice of cash or TeslaCash. They
+ * start at MATCHED like any other rider: the driver marks "I have arrived" at
+ * their pickup stop, starts them, and drops them at their destination.
+ */
 export async function hopOnRide(
   rideId: string,
   body: {
     pickupStopId: string;
     dropStopId: string;
     seats?: number;
-    waitAndSave?: boolean;
     paymentMethod?: "CASH" | "WALLET";
   },
 ) {
