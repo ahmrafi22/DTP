@@ -107,3 +107,37 @@ lib/
   moving on its own between interactions.
 - The JWT is in `localStorage`, which is demo-acceptable but not XSS-proof —
   httpOnly cookies are the production choice.
+
+## The living map
+
+Every auto on the map is a real driver account with a vehicle, a home stop
+and a home corridor. One poll endpoint (`GET /map/live`) drives the whole
+map, and a small scheduler on the server keeps **~3 randomly chosen drivers
+running at all times** — real trips, real riders aboard, real completions
+landing in history.
+
+- **Tap a running auto** to see who is aboard (first name + where they get
+  off — never anyone's fare) and how many seats are free.
+- **Join this ride** if you have a free hand: pick **Get in at** and **Get
+  out at** along the route (stops the auto has already passed are hidden),
+  watch your fare settle live, claim the seat. The join reprices everyone
+  already aboard.
+- **Wait & Save** — after matching, a rider can hold their seat for a short
+  window (30s in the demo) to earn an extra 5% off if the trip finishes
+  after the wait. Both sides can see the offer, accept it, or pass.
+- **I'm out at <stop>** — a passenger finishes their own leg; the ride
+  completes when nobody is left riding.
+
+## Demo walkthrough (three minutes)
+
+1. Sign in as **Nusrat** and request Banani → Mohakhali.
+2. Open a second browser as **Jashim** (Activity) — the request appears in
+   his console within seconds. Press **Accept** (or **Pass** to see it leave
+   only his list).
+3. As Nusrat, accept the **Wait & Save** offer and watch the countdown; the
+   driver marks **arrived**, then **start**.
+4. Open the map as **Shirin** and tap the running auto: choose get-in /
+   get-out stops, watch her fare price itself against the current
+   occupancy, and claim the seat. Nusrat's fare drops as the shared legs fill.
+5. As Nusrat or Shirin, press **I'm out at <stop>** when the trip ends; the
+   ride completes and the fares (with every wait honoured) land in history.
