@@ -59,6 +59,8 @@ export type Fare = {
   baseFare: number;
   distanceCharge: number;
   poolDiscount: number;
+  /** Extra discount from the Wait & Save promise; 0 when not used. */
+  waitSaveDiscount: number;
   total: number;
   lines: FareLine[];
 };
