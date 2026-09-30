@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -9,22 +9,27 @@ import {
   IoCash,
   IoChevronDown,
   IoPeople,
+  IoMapOutline,
   IoPower,
+  IoStar,
 } from "react-icons/io5";
 import {
   STATUS_LABEL,
   groupPoolable,
   isActive,
   personaById,
+  adaptRequest,
   useActiveRequest,
   useActiveTrip,
   useStore,
   type RideRequest,
+  type RideStatus,
 } from "@/components/store";
 import { FareLines, RatingRow, StatusStepper } from "@/components/map/ride-panel";
 import { AppNav, SiteHeader } from "@/components/app-nav";
 import { DotsPulse, GooeyBalls, Spinner } from "@/components/loaders";
 import { NODES, formatTaka } from "@/lib/network";
+import { useTripProgress } from "@/lib/trip-progress";
 import { fetchRideEvents, type ApiRideEvent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -168,9 +173,19 @@ function HistoryCard({ request }: { request: RideRequest }) {
           </span>
           <span className="text-muted-foreground mt-0.5 flex items-center gap-1.5">
             <StatusChip status={request.status} />
+            {request.waitAndSave && request.fare.waitSaveDiscount > 0 && (
+              <span className="text-emerald-600 font-bold">
+                Wait &amp; save −{formatTaka(request.fare.waitSaveDiscount)}
+              </span>
+            )}
             {request.fare.poolDiscount > 0 && (
               <span className="bg-primary/15 text-primary rounded-full px-2 py-0.5 text-[10px] font-bold">
                 Pooled −{formatTaka(request.fare.poolDiscount)}
+              </span>
+            )}
+            {request.paymentMethod === "WALLET" && (
+              <span className="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-[10px] font-bold">
+                {request.settled ? "Paid from TeslaPay" : "TeslaPay pending"}
               </span>
             )}
           </span>
@@ -200,6 +215,27 @@ function DriverConsole() {
   const { state, persona, vehicle, dispatch, error } = useStore();
   const activeTrip = useActiveTrip();
   const online = persona ? state.onlineDriverIds.includes(persona.id) : false;
+
+  // How far the trip has run, on the same 90-second budget the map animation
+  // uses, so the console and the map agree on when the ride is over.
+  const tripProgress = useTripProgress(
+    activeTrip?.status === "STARTED",
+    activeTrip?.updatedAt,
+  );
+
+  // Reaching the final destination ends the trip on its own — nobody has to
+  // press "Complete". Guarded so it fires once per ride and never fights the
+  // driver if they are already transitioning manually.
+  const autoCompletedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeTrip || activeTrip.status !== "STARTED") return;
+    if (tripProgress < 1) return;
+    if (autoCompletedRef.current === activeTrip.id) return;
+    autoCompletedRef.current = activeTrip.id;
+    void dispatch({ type: "ADVANCE_TRIP", tripId: activeTrip.id, event: "COMPLETED" });
+    // `activeTrip` itself is a dependency: the ref guard above makes this
+    // idempotent, so re-running on each poll costs nothing.
+  }, [activeTrip, tripProgress, dispatch]);
 
   const pendingGroups = useMemo(
     () => groupPoolable(state.requests.filter((r) => r.status === "REQUESTED")),
@@ -316,7 +352,16 @@ function DriverConsole() {
         <div>
           <h2 className="text-foreground pb-2 text-sm font-bold">Past trips</h2>
           <ul className="space-y-2">
-            {completedTrips.map((trip) => (
+            {completedTrips.map((trip) => {
+              const rated = trip.requestIds
+                .map((id) => state.requests.find((r) => r.id === id))
+                .filter((r): r is NonNullable<typeof r> => typeof r?.rating === "number");
+              const avgRating = rated.length
+                ? (
+                    rated.reduce((sum, r) => sum + (r.rating ?? 0), 0) / rated.length
+                  ).toFixed(1)
+                : "—";
+              return (
               <li key={trip.id} className="bg-card border-border rounded-2xl border p-4 shadow-sm">
                 <div className="flex items-center justify-between pb-2">
                   <p className="text-muted-foreground text-xs font-semibold">
@@ -324,13 +369,15 @@ function DriverConsole() {
                       ? `${fmtDate(trip.events[trip.events.length - 1].at)} · `
                       : ""}
                     {trip.seatsTaken} of {trip.capacity} seats filled
+                    {rated.length > 0 && ` · ★ ${avgRating}`}
                   </p>
                   <StatusChip status={trip.status} />
                 </div>
                 <TripRiders trip={trip} />
                 <TripTimeline tripId={trip.id} />
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
       )}
@@ -388,6 +435,78 @@ function TripTimeline({ tripId }: { tripId: string }) {
   );
 }
 
+/**
+ * One rider's row on the active trip: their own lifecycle track and their own
+ * action. Two riders render two of these, three render three — nothing about
+ * the trip is collapsed into a single shared control.
+ */
+function RiderRow({
+  rider,
+  ride,
+}: {
+  rider: RideRequest;
+  ride: { id: string; capacity: number; seatsTaken: number; status: RideStatus };
+}) {
+  const { dispatch, pendingAction } = useStore();
+
+  const firstName =
+    rider.passengerName?.split(" ")[0] ?? personaById(rider.passengerId)?.name.split(" ")[0] ?? "Rider";
+
+  // Each rider advances independently: the driver picks people up at different
+  // points, so rider two still has "arrived" and "start" to be marked after
+  // rider one has been dropped off. Every step goes through the per-rider
+  // endpoint, which is legal in any order the rider has not yet passed.
+  const action = (() => {
+    switch (rider.status) {
+      case "MATCHED":
+        return {
+          key: `rider:${rider.id}`,
+          label: `Mark arrived with ${firstName}`,
+          run: () => dispatch({ type: "RIDER_ADVANCE", rideId: ride.id, requestId: rider.id }),
+        };
+      case "DRIVER_ARRIVED":
+        return {
+          key: `rider:${rider.id}`,
+          label: `Start with ${firstName}`,
+          run: () => dispatch({ type: "RIDER_ADVANCE", rideId: ride.id, requestId: rider.id }),
+        };
+      case "STARTED":
+        return {
+          key: `rider:${rider.id}`,
+          label: `Drop off at ${stopName(rider.dropStopId)}`,
+          run: () => dispatch({ type: "RIDER_ADVANCE", rideId: ride.id, requestId: rider.id }),
+        };
+      default:
+        return null;
+    }
+  })();
+
+  const busy = action !== null && pendingAction === action.key;
+
+  return (
+    <div className="border-border bg-muted/40 rounded-xl border px-2.5 py-2">
+      <div className="flex items-center justify-between pb-1.5">
+        <span className="text-foreground truncate text-xs font-bold">{firstName}</span>
+        <span className="text-muted-foreground shrink-0 text-[10px]">
+          {stopName(rider.pickupStopId)} → {stopName(rider.dropStopId)}
+        </span>
+      </div>
+      <StatusStepper status={rider.status} />
+      {action && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={action.run}
+          className="border-border text-muted-foreground hover:bg-muted hover:text-foreground mt-1.5 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border text-[11px] font-bold transition-all disabled:opacity-60"
+        >
+          {busy && <DotsPulse className="size-3 shrink-0" />}
+          <span className="truncate">{busy ? "Working…" : action.label}</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 function TripRiders({ trip }: { trip: { requestIds: string[] } }) {
   const { state } = useStore();
   return (
@@ -404,6 +523,22 @@ function TripRiders({ trip }: { trip: { requestIds: string[] } }) {
             <span className="text-muted-foreground min-w-0 flex-1 truncate">
               {stopName(req.pickupStopId)} → {stopName(req.dropStopId)}
             </span>
+            {typeof req.rating === "number" && (
+              <span
+                className="text-primary flex shrink-0 items-center gap-0.5 font-bold"
+                title={`Rated ${req.rating} of 5`}
+              >
+                <IoStar className="size-3" />
+                {req.rating}
+              </span>
+            )}
+            <span className="text-muted-foreground shrink-0 text-[10px] font-semibold">
+              {req.paymentMethod === "WALLET"
+                ? req.settled
+                  ? "paid"
+                  : "TeslaPay"
+                : "cash"}
+            </span>
             <span className="text-foreground shrink-0 font-bold">{formatTaka(req.fare.total)}</span>
           </li>
         );
@@ -413,6 +548,9 @@ function TripRiders({ trip }: { trip: { requestIds: string[] } }) {
 }
 
 function PendingGroupCard({ group, disabled }: { group: RideRequest[]; disabled: boolean }) {
+  const { pendingAction } = useStore();
+  const accepting =
+    pendingAction === `accept:${group.map((g) => g.id).join(",")}`;
   const { vehicle, dispatch } = useStore();
   if (!vehicle) return null;
   const fits = group.length <= vehicle.capacity;
@@ -435,11 +573,16 @@ function PendingGroupCard({ group, disabled }: { group: RideRequest[]; disabled:
       <TripRiders trip={{ requestIds: group.map((g) => g.id) }} />
       <button
         type="button"
-        disabled={disabled || !fits}
+        disabled={disabled || !fits || accepting}
         onClick={() => dispatch({ type: "ACCEPT_REQUESTS", requestIds: group.map((g) => g.id) })}
-        className="bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] mt-3 w-full rounded-xl py-2.5 text-xs font-bold transition-all disabled:pointer-events-none disabled:opacity-50"
+        className="bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] mt-3 flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold transition-all disabled:pointer-events-none disabled:opacity-50"
       >
-        {fits ? `Accept ${group.length === 1 ? "ride" : "pool"}` : "Not enough seats"}
+        {accepting && <DotsPulse className="size-3.5" />}
+        {accepting
+          ? "Accepting…"
+          : fits
+            ? `Accept ${group.length === 1 ? "ride" : "pool"}`
+            : "Not enough seats"}
       </button>
       {disabled && (
         <p className="text-muted-foreground pt-1.5 text-center text-[10px]">
@@ -451,7 +594,9 @@ function PendingGroupCard({ group, disabled }: { group: RideRequest[]; disabled:
 }
 
 function ActiveTripCard({ trip }: { trip: NonNullable<ReturnType<typeof useActiveTrip>> }) {
-  const { persona, dispatch, state } = useStore();
+  const { persona, dispatch, state, driverState, pendingAction } = useStore();
+  // Only this trip's own transition spins, not the whole console.
+  const advancing = pendingAction?.startsWith(`advance:${trip.id}:`) ?? false;
 
   // A mid-trip joiner must share at least one leg with a rider already on
   // board; the server rejects the rest, so the client filters first to keep
@@ -466,6 +611,19 @@ function ActiveTripCard({ trip }: { trip: NonNullable<ReturnType<typeof useActiv
         r.status === "REQUESTED" && r.legIds.some((id) => onBoardLegs.has(id)),
     );
   }, [state.requests, trip.requestIds]);
+
+  // Each rider on board, in boarding order, so their individual lifecycle can
+  // be rendered rather than one stepper standing in for the whole trip.
+  // Read riders from the authoritative driver payload, not the merged mirror:
+  // `state.requests` is an accumulator that can lag or miss a member, and an
+  // empty list here silently collapsed every row into a single trip stepper.
+  const riders = useMemo<readonly RideRequest[]>(() => {
+    const live = driverState?.activeTrip?.requests;
+    if (live && live.length > 0) return live.map(adaptRequest);
+    return trip.requestIds
+      .map((id) => state.requests.find((r) => r.id === id))
+      .filter((r): r is NonNullable<typeof r> => Boolean(r));
+  }, [driverState?.activeTrip?.requests, state.requests, trip.requestIds]);
 
   if (!persona) return null;
 
@@ -485,7 +643,26 @@ function ActiveTripCard({ trip }: { trip: NonNullable<ReturnType<typeof useActiv
           <p className="text-foreground text-sm font-bold">Current trip</p>
           <StatusChip status={trip.status} />
         </div>
-        <StatusStepper status={trip.status} />
+        {/* One lifecycle row per rider, each tracking *that rider's* status.
+            Two riders show it twice, three show it three times — and a rider
+            who hopped on mid-trip is genuinely further along than one who
+            boarded at the start, which a single shared stepper hid. */}
+        <div className="space-y-2">
+          {riders.map((rider) => (
+            <RiderRow key={rider.id} rider={rider} ride={trip} />
+          ))}
+          {/* Never collapse silently: if the rider list cannot be resolved,
+              say so rather than showing one bare stepper that looks like a
+              single-rider trip. */}
+          {riders.length === 0 && (
+            <div className="border-border bg-muted/40 rounded-xl border px-2.5 py-2">
+              <p className="text-muted-foreground pb-1.5 text-[11px] font-semibold">
+                {trip.requestIds.length} rider(s) on this trip
+              </p>
+              <StatusStepper status={trip.status} />
+            </div>
+          )}
+        </div>
         <p className="text-muted-foreground mt-2 text-center text-[11px] font-semibold">
           {trip.seatsTaken} of {trip.capacity} seats filled
         </p>
@@ -525,27 +702,45 @@ function ActiveTripCard({ trip }: { trip: NonNullable<ReturnType<typeof useActiv
             </ul>
           </div>
         )}
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 grid grid-cols-2 gap-2">
           {action && (
             <button
               type="button"
+              disabled={advancing}
               onClick={() => dispatch({ type: "ADVANCE_TRIP", tripId: trip.id, event: action.event })}
-              className="bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] flex-1 rounded-xl py-2.5 text-xs font-bold transition-all"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] flex h-11 w-full items-center justify-center gap-2 rounded-xl px-3 text-xs font-bold transition-all disabled:opacity-70"
             >
-              {action.label}
+              {advancing && <DotsPulse className="size-3.5 shrink-0" />}
+              <span className="truncate">{advancing ? "Working…" : action.label}</span>
             </button>
           )}
           <Link
             href="/"
-            className="border-border text-foreground hover:bg-muted active:scale-[0.98] inline-flex items-center justify-center gap-1.5 rounded-xl border px-4 py-2.5 text-xs font-bold transition-all"
+            className={cn(
+              "border-border text-foreground hover:bg-muted active:scale-[0.98] flex h-11 w-full items-center justify-center gap-1.5 rounded-xl border px-3 text-xs font-bold transition-all",
+              !action && "col-span-2",
+            )}
           >
-            Show on map
+            <IoMapOutline className="size-3.5 shrink-0" />
+            <span className="truncate">Show on map</span>
           </Link>
         </div>
         {trip.status === "STARTED" && (
           <p className="text-muted-foreground pt-2 text-center text-[10px]">
             Trip under way — passengers can no longer cancel.
           </p>
+        )}
+        {/* Demo shortcut: jump the trip to COMPLETED without waiting out the
+            full 90 seconds. The server still enforces the real transition
+            (STARTED -> COMPLETED), so this is not a bypass. */}
+        {trip.status === "STARTED" && (
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "ADVANCE_TRIP", tripId: trip.id, event: "COMPLETED" })}
+            className="border-border text-muted-foreground hover:bg-muted hover:text-foreground mt-2 w-full rounded-xl border py-2 text-[11px] font-bold transition-all"
+          >
+            Skip to end of ride 
+          </button>
         )}
       </div>
     </motion.div>

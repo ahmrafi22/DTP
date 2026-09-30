@@ -95,8 +95,8 @@ export default function LoginPage() {
             key={persona.id}
             type="button"
             onClick={() => signInPersona(persona)}
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ y: 16 }}
+            animate={{ y: 0 }}
             transition={{ ...spring, delay: i * 0.05 }}
             whileTap={{ scale: 0.98 }}
             className="bg-card border-border hover:border-primary hover:bg-secondary/50 flex items-center gap-3 rounded-2xl border p-4 text-left shadow-sm transition-colors"
